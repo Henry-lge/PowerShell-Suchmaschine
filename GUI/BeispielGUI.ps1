@@ -6,7 +6,7 @@ Import-Module "PwshSpectreConsole"
 do {
     Clear-Host
     Write-Seperator
-    Write-HostCenter "DATEISUCHE" -ForegroundColor Green
+   'Dateisuche' | Write-Ascii -ForegroundColor green
     Write-Seperator
 
     $choice = Read-SpectreSelection -Title "Hauptmenü - Bitte wähle eine Option:" -Choices @(
@@ -21,3 +21,6 @@ do {
     }
 } until ($choice -eq "Beenden")
 Clear-Host
+
+
+$counter = 0
