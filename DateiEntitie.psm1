@@ -1,5 +1,4 @@
 class Datei {
-    # Basic file metadata.
     [String]$Name
     [String]$Path
     [String]$Extension
@@ -8,13 +7,11 @@ class Datei {
     [DateTime]$LastWriteTime
     [DateTime]$LastAccessTime
 
-    # Optional hash and content.
     [String]$Hash
     [String]$Content
 
-    # Return readable file information.
     [string[]] print() {
-        return @(
+        $output = @(
             "Name: $($this.Name)"
             "Path: $($this.Path)"
             "Extension: $($this.Extension)"
@@ -22,8 +19,48 @@ class Datei {
             "Creation Time: $($this.CreationTime)"
             "Last Write Time: $($this.LastWriteTime)"
             "Last Access Time: $($this.LastAccessTime)"
-            "Hash (SHA256): $($this.Hash)"
-            ""
         )
+
+        if (-not [string]::IsNullOrEmpty($this.Hash)) {
+            $output += "Hash (SHA256): $($this.Hash)"
+        }
+
+        if (-not [string]::IsNullOrEmpty($this.Content)) {
+            $contentLength = $this.Content.Length
+            $output += "Content: $contentLength characters"
+        }
+
+        $output += ""
+        return $output
+    }
+
+
+    [System.Collections.Hashtable] ToHashtable() {
+        return @{
+            Name = $this.Name
+            Path = $this.Path
+            Extension = $this.Extension
+            Size = $this.Size
+            CreationTime = $this.CreationTime
+            LastWriteTime = $this.LastWriteTime
+            LastAccessTime = $this.LastAccessTime
+            Hash = $this.Hash
+            Content = $this.Content
+        }
+    }
+
+   
+    [PSCustomObject] ToObject() {
+        return [PSCustomObject]@{
+            Name = $this.Name
+            Path = $this.Path
+            Extension = $this.Extension
+            Size = $this.Size
+            CreationTime = $this.CreationTime
+            LastWriteTime = $this.LastWriteTime
+            LastAccessTime = $this.LastAccessTime
+            Hash = $this.Hash
+            Content = $this.Content
+        }
     }
 }
