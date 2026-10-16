@@ -1,29 +1,43 @@
-# Load the scanner module.
-using module "./DocScanner.psm1"
+# Crawler-Modul laden (es lädt den DocScanner, das Modell und das Repository).
+using module "./src/Crawler/Crawler.psm1"
 
-# Create a scanner with default options.
-$docScanner = [Scanner]::new()
+param(
+    # Startordner für den Scan. Standardmäßig der Benutzerordner.
+    [string]$RootPath = $HOME,
 
-# Optional: Enable progress output for large scans
-$docScanner.ProgressOutput = $true
-$docScanner.VerboseOutput = $false
+    # Zusätzliche absolute Ordnerpfade, die übersprungen werden.
+    [string[]]$ExcludePath = @()
+)
 
-# Measure the scan duration.
+# Crawler mit Standardeinstellungen erstellen.
+$crawler = [Crawler]::new()
+$crawler.ExcludedPaths = $ExcludePath
+
+# Optional: Fortschritt bei großen Scans ausgeben
+$crawler.ProgressOutput = $true
+$crawler.ProgressInterval = 1000
+$crawler.VerboseOutput = $false
+
+# Dauer des Scans messen.
 $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
-# Recursively scan the root folder.
-$docScanner.ScanFolder("/Users/henry/Developer/")
+# Startordner rekursiv durchsuchen.
+$crawler.ScanFolder($RootPath)
 
-# Stop the timer after scanning.
+# Zeitmessung nach dem Scan beenden.
 $stopwatch.Stop()
 
-# Print the scan summary.
-Write-Host "Scanned folders: $($docScanner.ScannedFolders)"
-Write-Host "Scanned files: $($docScanner.ScannedFiles)"
-Write-Host "Processed files: $($docScanner.ProcessedFiles)"
-Write-Host "Failed files: $($docScanner.FailedFiles)"
-Write-Host "Files with content read: $($docScanner.ContentFilesRead)"
-Write-Host "Files with content skipped: $($docScanner.ContentFilesSkipped)"
-Write-Host "Hash matches (skipped): $($docScanner.HashMatches)"
-Write-Host "Errors: $($docScanner.Errors.Count)"
+# Zusammenfassung des Scans ausgeben.
+$crawler.GetSummary() | Format-List | Out-Host
+
+# Fehler, gruppiert nach dem Schritt, in dem sie aufgetreten sind.
+if ($crawler.Errors.Count -gt 0) {
+    $crawler.Errors |
+        Group-Object Phase |
+        Select-Object @{ Name = "Phase"; Expression = { $_.Name } }, Count |
+        Format-Table -AutoSize |
+        Out-Host
+}
+
+Write-Host "Supported content types: $($crawler.DocScanner.GetSupportedExtensions() -join ', ')"
 Write-Host "Scan duration: $($stopwatch.Elapsed.TotalSeconds.ToString('F3')) seconds"
