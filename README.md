@@ -109,6 +109,7 @@ werden. Die aktuelle Größenbegrenzung ist über
 | [src/Model/](./src/Model/) | Datei- und Scan-Fehlermodelle. |
 | [src/Persistence/](./src/Persistence/) | Repository-Schnittstelle, In-Memory- und SQLite-Implementierung sowie SQLite-Laufzeitinstallation. |
 | [src/Common/](./src/Common/) | Plattformgerechter Pfadvergleich und Erkennung von Cloud-Platzhaltern. |
+| [src/GUI/](./src/GUI/) | Dateien für Benuteroberfläche |
 | [tests/](./tests/) | Pester-Tests für die SQLite-Implementierung. |
 | `lib/sqlite/` | Lokal abgelegte SQLite-.NET- und native Laufzeitdateien; wird bei Bedarf eingerichtet und nicht versioniert. |
 
