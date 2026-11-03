@@ -12,9 +12,11 @@ namespace FileSearcherApp
 {
     public sealed record SearchHit(
         string Path, string FileName, string Extension,
-        DateTime LastWriteUtc, string Snippet, double Score)
+        DateTime LastWriteUtc, string Snippet, double Score, string MatchedIn = "")
     {
-        public override string ToString() => $"{FileName} — {Path}";
+        public override string ToString() =>
+        string.IsNullOrEmpty(MatchedIn) ? $"{FileName} — {Path}"
+                                        : $"[{MatchedIn}] {FileName} — {Path}";
     }
 
     public sealed class SearchException : Exception
@@ -25,8 +27,8 @@ namespace FileSearcherApp
     public interface ISearchService
     {
         Task<IReadOnlyList<SearchHit>> SearchAsync(
-            string query, int limit = 100, string? extension = null,
-            CancellationToken ct = default);
+         string query, int limit = 100, string? extension = null,
+            string mode = "both", CancellationToken ct = default);
     }
 
     public sealed class PowerShellSearchService : ISearchService
@@ -44,7 +46,7 @@ namespace FileSearcherApp
         }
 
         public async Task<IReadOnlyList<SearchHit>> SearchAsync(
-            string query, int limit = 100, string? extension = null, CancellationToken ct = default)
+            string query, int limit = 100, string? extension = null, string mode = "both", CancellationToken ct = default)
         {
             var psi = new ProcessStartInfo("pwsh")
             {
@@ -83,7 +85,7 @@ namespace FileSearcherApp
             using (ct.Register(() => { try { proc.Kill(true); } catch { } }))
             {
                 var request = JsonSerializer.Serialize(
-                    new { query, limit, extension, prefix = true }, Json);
+                    new { query, limit, extension, prefix = true, mode }, Json);
                 await proc.StandardInput.WriteAsync(request);
                 proc.StandardInput.Close();
 
