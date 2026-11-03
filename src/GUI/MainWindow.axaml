@@ -1,0 +1,17 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="FileSearcherApp.MainWindow"
+        Title="Avalonia PowerShell Dateisucher" Width="650" Height="450"
+        Background="#0c3835">
+    
+    <StackPanel Margin="20" Spacing="10">
+        <TextBlock Text="Powershell Suchmaschine" FontSize="18" FontWeight="Bold"/>
+        
+        <TextBox x:Name="SearchBox" Watermark="Suchbegriff eingeben (z. B. *.txt)..." />
+        
+        <Button Content="Suche starten" Click="OnSearchClicked" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
+        
+        <TextBlock Text="Ergebnisse:" FontWeight="SemiBold" Margin="0,10,0,0"/>
+        <ListBox x:Name="ResultsList" Height="250" />
+    </StackPanel>
+</Window>
