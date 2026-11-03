@@ -53,6 +53,29 @@ Initialisierung legt das übergeordnete Verzeichnis und bei Bedarf Datenbank
 und Tabellen an. Für den grundlegenden Aufbau ist keine separate
 Serverinstallation nötig.
 
+## Entwicklungsschritte des Programms
+
+Die Architektur hat sich in aufeinander aufbauenden Schritten entwickelt:
+
+1. **Dateien erfassen:** Der Crawler durchläuft Verzeichnisse und bildet
+   Dateimetadaten als `Datei`-Objekte ab.
+2. **Inhalte extrahieren:** Der DocScanner wählt passende Reader aus und
+   liefert Klartext für unterstützte Formate.
+3. **Speicherung entkoppeln:** `DateiRepository` trennt den Scanablauf vom
+   Speicher. Damit kann der Crawler mit einem In-Memory- oder einem
+   persistenten Repository arbeiten.
+4. **Persistenz und Volltextsuche:** `SqliteDateiRepository` speichert
+   Metadaten in `files_metadata` und extrahierten Text im separaten FTS5-Index.
+5. **Redundanz abbauen:** Das Datenbankschema speichert Verzeichnis, Dateiname
+   und Endung getrennt; die Migration übernimmt bestehende Datenbanken und
+   verknüpft FTS-Einträge über interne IDs.
+6. **Datenbankzugriffe bündeln und optimieren:** `GetMany()` lädt mehrere
+   Metadatensätze pro Abfrage, `GetPathsUnder()` nutzt einen Verzeichnisindex,
+   und `SaveBatch()` verwendet vorbereitete SQL-Befehle wieder.
+
+Die Optimierungen dieses letzten Schritts bleiben auf der
+Repository-/Datenbankseite. Der Crawler selbst ist nicht Teil dieser Änderung.
+
 ## Voraussetzungen und Installation
 
 - PowerShell 7.2 oder neuer
@@ -106,12 +129,18 @@ Enthält genau einen Eintrag je normalisiertem Dateipfad:
 | `is_cloud_only` | Ob die Datei als Cloud-Platzhalter übersprungen wurde. |
 
 Auf `extension` liegt ein case-insensitiver Index für Filterung nach
-Dateiendung. Ein eindeutiger
-zusammengesetzter Index aus `directory_path`, `filename` und `extension`
-verhindert doppelte Einträge. Groß-/Kleinschreibung wird auf Windows und macOS
-ignoriert und unter Linux unterschieden. Der vollständige Pfad wird beim Lesen
-aus diesen drei Werten zusammengesetzt und nicht redundant gespeichert. Das
-Dateiobjekt normalisiert die angezeigte Endung weiterhin zu Kleinbuchstaben.
+Dateiendung. Ein eindeutiger zusammengesetzter Index aus `directory_path`,
+`filename` und `extension` verhindert doppelte Einträge.
+Groß-/Kleinschreibung wird auf Windows und macOS ignoriert und unter Linux
+unterschieden. Der vollständige Pfad wird beim Lesen aus diesen drei Werten
+zusammengesetzt und nicht redundant gespeichert. Das Dateiobjekt normalisiert
+die angezeigte Endung weiterhin zu Kleinbuchstaben.
+
+Der zusammengesetzte Index unterstützt außerdem gezielte Abfragen nach
+mehreren Dateipfaden. Auf Systemen mit case-sensitiven Pfaden gibt es zusätzlich
+einen case-insensitiven Verzeichnisindex, den `GetPathsUnder()` für eine
+kandidatenbasierte Präfixsuche nutzt; die abschließende Pfadprüfung beachtet
+weiterhin die Plattformregeln.
 
 ### `files_fts`
 
@@ -168,22 +197,26 @@ sequenceDiagram
     end
 ```
 
-Das Repository zerlegt den normalisierten Pfad und sucht den Metadatensatz
-über `directory_path`, `filename` und `extension`. Es fügt einen neuen Satz ein
-oder aktualisiert den vorhandenen per interner ID. Anschließend wird der
-zugehörige FTS-Eintrag ersetzt. Beide Schritte sind derselben Transaktion
-zugeordnet.
+Das Repository zerlegt den normalisierten Pfad und fügt den Metadatensatz ein
+oder aktualisiert ihn anhand des eindeutigen Indexes. Das Upsert liefert die
+interne ID direkt zurück. Anschließend wird der zugehörige FTS-Eintrag
+ersetzt. Beide Schritte sind derselben Transaktion zugeordnet.
 
-Werte werden über benannte Parameter (`$pathParameter`,
-`$contentParameter` usw.) übergeben und nicht in den SQL-Text eingesetzt. Das
-gilt für Pfade, Dateinamen, Inhalte und Suchtext. Die Abfrage selbst bleibt
-dadurch von den Datenwerten getrennt.
+Werte werden über benannte Parameter (zum Beispiel
+`$directoryParameter`, `$filenameParameter` und `$contentParameter`) übergeben
+und nicht in den SQL-Text eingesetzt. Das gilt für Pfade, Dateinamen, Inhalte
+und Suchtext. Die Abfrage selbst bleibt dadurch von den Datenwerten getrennt.
 
-## Schreib- und Scanverhalten
+## Lese- und Scanverhalten
 
 - `Save(file)` speichert eine Datei über dieselbe Batch-Logik wie `SaveBatch`.
 - `SaveBatch(files)` schreibt Metadaten und FTS-Einträge innerhalb **einer
   Transaktion**. Bei einem Fehler wird der ganze Batch zurückgerollt.
+- `GetMany(paths)` lädt bekannte Metadatensätze mit einer gemeinsamen
+  SQL-Abfrage je höchstens 300 Pfade. Das vermeidet einen Datenbank-Roundtrip
+  pro Datei; fehlende Pfade sind nicht im Ergebnis enthalten.
+- `Sync-Files` verwendet `GetMany()` vor dem Vergleich der Änderungszeiten und
+  speichert danach nur neue oder geänderte Dateien.
 - Ein vorhandener Pfad wird aktualisiert statt dupliziert.
 - Beim Aktualisieren wird zunächst der bisherige FTS-Eintrag entfernt und
   danach - sofern `HasContent` gesetzt ist - der neue Inhalt indiziert.
@@ -193,6 +226,9 @@ dadurch von den Datenwerten getrennt.
 - Unveränderte Dateien werden vom Crawler nicht erneut gelesen oder gespeichert.
   Entscheidend ist dabei `LastWriteTimeUtc`; Dateigröße und Inhalt werden nicht
   zusätzlich verglichen.
+- Beim Schreiben bereitet `SaveBatch()` die Metadaten-, FTS-Lösch- und
+  FTS-Einfüge-Befehle einmal pro Transaktion vor und verwendet dieselben
+  Befehle mit aktualisierten Parametern für jede Datei wieder.
 - Der Crawler schreibt standardmäßig in Batches von 200 Dateien
   (`SaveBatchSize`). Ein fehlgeschlagener Batch wird als Repository-Fehler
   gemeldet.
@@ -202,12 +238,30 @@ weder gefunden noch unter einem nicht lesbaren Ordner liegen, aus der
 Datenbank entfernt. Ein einzelner Dateiaufruf über `ProcessFile()` führt
 keine Lösch-Erkennung durch.
 
-`GetPathsUnder()` liest momentan alle Verzeichnispfade, Dateinamen und
-Endungen aus `files_metadata`, setzt daraus die vollständigen Dateipfade
-zusammen und prüft dann in PowerShell mit `PathUtil.IsSameOrUnder()`, welche
-unter dem Scan-Root liegen. Die aktuelle Implementierung nutzt dafür keine
-SQL-Präfixabfrage, weil ein einfacher Textpräfix Ordner wie `/docs-old`
-irrtümlich mit `/docs` verwechseln könnte.
+`GetPathsUnder()` fragt zuerst nur Datensätze ab, deren Verzeichnis exakt dem
+Scan-Root entspricht oder mit dem Root plus Pfadtrenner beginnt. SQLite nutzt
+dabei einen Verzeichnisindex und escaped `%`, `_` sowie `\` im Rootpfad, damit
+Dateinamen mit diesen Zeichen nicht als SQL-Wildcards interpretiert werden.
+Die Kandidaten werden anschließend weiterhin mit
+`PathUtil.IsSameOrUnder()` geprüft. So bleibt die Prüfung der Ordnergrenze und
+der Plattform-spezifischen Groß-/Kleinschreibung maßgeblich.
+
+Die `GetMany()`-Methode steht im Repository-Vertrag zur Verfügung und ist
+bereits in `Sync-Files` eingebunden. Der Crawler ruft derzeit jedoch für jede
+Datei einzeln `Get(path)` auf. Er wurde hier bewusst nicht geändert; der
+laufende Crawler-Scan erhält den Vorteil der gebündelten Leseabfrage daher erst,
+wenn seine Seite des Repository-Vertrags später `GetMany()` aufruft.
+
+### Batchgröße messen
+
+`SaveBatch()` verarbeitet alle übergebenen Dateien in einer Transaktion und
+verwendet vorbereitete Befehle. Die Batchgröße selbst bestimmt weiterhin der
+aufrufende Scanprozess; der aktuelle Crawler-Standard ist 200 Dateien. Für eine
+fundierte Abstimmung sollten vollständige, repräsentative Scans mit mehreren
+Werten (zum Beispiel 100, 200 und 500 Dateien pro Batch) auf demselben
+Dateibaum und derselben Datenbank gemessen werden. Neben der Gesamtdauer auch
+Anzahl und Dauer fehlgeschlagener Batches sowie den Speicherbedarf vergleichen.
+Den Crawler und seine Batch-Konfiguration habe ich nicht geändert.
 
 ## Volltextsuche
 
@@ -299,6 +353,7 @@ Invoke-Pester ./tests/SqliteDateiRepository.Tests.ps1
 
 Die Tests legen temporäre Datenbanken an und prüfen unter anderem Transaktionen
 und Rollbacks, Suche und Snippets, Endungsfilter, Synchronisierung,
+gebündelte Lookups über Batchgrenzen, Ordnerpfade mit SQL-Wildcards,
 Persistenz nach erneutem Öffnen und Verhalten nach `Dispose()`.
 
 ## Initialisierung und Verbindung Schritt für Schritt
@@ -338,11 +393,12 @@ Metadaten und FTS-Inhalte bleiben erhalten.
 | Methode | Datenbankarbeit | Ergebnis / wichtige Eigenschaft |
 |---|---|---|
 | `Get(path)` | `SELECT` aus `files_metadata` anhand der normalisierten Pfadteile. | Gibt `null` zurück, wenn der Pfad unbekannt ist. Gibt keinen Inhalt zurück und liest nicht aus FTS. |
+| `GetMany(paths)` | Je höchstens 300 Pfade eine `VALUES`-CTE mit Join auf den zusammengesetzten Pfadindex. | Gibt ein Dictionary vorhandener Dateien zurück; fehlende Pfade fehlen. |
 | `Save(file)` | Delegiert an `SaveBatch()` mit genau einem Eintrag. | Einzelschreiben erhalten dieselben Validierungs- und Transaktionseigenschaften. |
-| `SaveBatch(files)` | Validiert Pfade vorab, beginnt Transaktion und ruft je Element `SaveWithinTransaction()` auf. | Alles oder nichts für den Batch. Leere Batches sind No-op. |
-| `SaveWithinTransaction(file)` | Upsert der Metadaten, Löschen des alten FTS-Satzes, optionales Einfügen des neuen Texts. | Der Inhalt wird nur bei `HasContent = true` in FTS geschrieben. |
+| `SaveBatch(files)` | Validiert Pfade vorab, beginnt Transaktion und verwendet vorbereitete Metadaten- und FTS-Befehle für alle Einträge erneut. | Alles oder nichts für den Batch. Leere Batches sind No-op. |
+| `SaveWithinTransaction(file)` | Upsert der Metadaten, Löschen des alten FTS-Satzes, optionales Einfügen des neuen Texts über die vorbereiteten Befehle. | Der Inhalt wird nur bei `HasContent = true` in FTS geschrieben. |
 | `Remove(path)` | Löscht per Transaktion aus `files_fts` und `files_metadata`. | Verhindert verwaiste Treffer oder Metadatensätze, solange der Vorgang erfolgreich ist. |
-| `GetPathsUnder(folder)` | Liest gespeicherte Pfade und filtert sie mit `PathUtil`. | Gibt die Kandidaten für die Lösch-Erkennung zurück. |
+| `GetPathsUnder(folder)` | Indizierte Suche nach identischem Verzeichnis oder passendem Verzeichnispräfix; Kandidaten werden mit `PathUtil` exakt geprüft. | Gibt die Kandidaten für die Lösch-Erkennung zurück, ohne alle Metadaten zu lesen. |
 | `Search(query, limit, extension)` | FTS5-`MATCH`, Join auf Metadaten, optionaler Endungsfilter, Rang, Snippet und Limit. | Gibt Objekte mit `File`, `Snippet`, `Score` zurück. |
 | `Dispose()` | Schließt die SQLite-Verbindung einmalig. | Nach `Dispose()` weisen Repository-Methoden mit `EnsureOpen()` auf die ungültige Verwendung hin. |
 

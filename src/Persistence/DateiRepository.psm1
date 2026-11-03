@@ -23,6 +23,29 @@ class DateiRepository {
         throw "Get() must be implemented by a derived class."
     }
 
+    # Gibt vorhandene Dateien anhand ihrer Pfade zurück. Abgeleitete
+    # Repositories können die Abfrage bündeln; die Standardimplementierung
+    # bleibt mit bestehenden Repositorys kompatibel.
+    [System.Collections.Generic.Dictionary[string, Datei]] GetMany([string[]]$paths) {
+        $files = [System.Collections.Generic.Dictionary[string, Datei]]::new(
+            [PathUtil]::GetComparer()
+        )
+
+        foreach ($path in $paths) {
+            if ([string]::IsNullOrWhiteSpace($path)) {
+                throw "Each path must not be empty."
+            }
+
+            $normalizedPath = [PathUtil]::Normalize($path)
+            $file = $this.Get($normalizedPath)
+            if ($null -ne $file) {
+                $files[$normalizedPath] = $file
+            }
+        }
+
+        return $files
+    }
+
     # Fügt die Datei samt Inhalt ein oder ersetzt sie.
     [void] Save([Datei]$datei) {
         throw "Save() must be implemented by a derived class."

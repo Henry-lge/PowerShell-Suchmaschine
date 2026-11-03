@@ -171,6 +171,40 @@ Describe "SqliteDateiRepository" {
         $paths[0] | Should -Be $nested.Path
     }
 
+    It "filters wildcard characters literally when finding paths under a folder" {
+        $wildcardFolder = New-TestDatei -Path (
+            Join-Path $script:testRoot "wild%_scope/inside.txt"
+        )
+        $notUnderFolder = New-TestDatei -Path (
+            Join-Path $script:testRoot "wildXXscope/outside.txt"
+        )
+        $script:database.SaveBatch([Datei[]]@($wildcardFolder, $notUnderFolder))
+
+        $paths = $script:database.GetPathsUnder(
+            (Join-Path $script:testRoot "wild%_scope")
+        )
+
+        $paths | Should -HaveCount 1
+        $paths[0] | Should -Be $wildcardFolder.Path
+    }
+
+    It "retrieves many paths in bounded SQLite batches" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot "bulk-existing.txt")
+        $script:database.Save($file)
+        $paths = [System.Collections.Generic.List[string]]::new()
+        $paths.Add($file.Path)
+        for ($index = 0; $index -lt 605; $index++) {
+            $paths.Add((Join-Path $script:testRoot "missing-$index.txt"))
+        }
+
+        $stored = $script:database.GetMany($paths.ToArray())
+
+        $stored.Count | Should -Be 1
+        $stored[$file.Path].Name | Should -Be "bulk-existing.txt"
+        { $script:database.GetMany([string[]]@($file.Path, "")) } |
+            Should -Throw
+    }
+
     It "uses a transaction to persist a batch and rejects invalid records" {
         $file = New-TestDatei -Path (Join-Path $script:testRoot "valid.txt")
         $invalid = [Datei]::new()
