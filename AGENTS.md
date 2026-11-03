@@ -23,7 +23,12 @@ $env:PWD = "/some/path"; . "./suchmaschine.ps1"
 # With custom parameters:
 ./suchmaschine.ps1 -RootPath "C:\Docs\" -ExcludePath @("node_modules", ".git") `
     -DatabasePath "$HOME/.my-search-index/search.sqlite3"
+
+# Scan and search the persistent index
+./suchmaschine.ps1 -RootPath "$HOME/Documents" -Query "full text"
 ```
+
+The search is optional; without `-Query`, the script only scans.
 
 ## Repository Implementations (Exchangeable via Crawler.Repository)
 
