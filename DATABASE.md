@@ -506,6 +506,234 @@ Die SQL-Kommandos, Reader, Transaktionen und Verbindungen werden im Code
 jeweils mit `finally`/`Dispose()` freigegeben. Ein Fehler während des
 Konstruktor-Aufbaus schließt die Verbindung, bevor er weitergeworfen wird.
 
+## Sequenzdiagramme der Grundfunktionen
+
+Die Diagramme zeigen die zentralen Abläufe aus Sicht der Nutzung. Interne
+Hilfsmethoden wie `NewCommand()`, `ReadDatei()` und `EnsureOpen()` sind in den
+Abläufen zusammengefasst, statt jeweils ein eigenes Diagramm zu erhalten.
+
+### SQLite-Laufzeit und Datenbank initialisieren
+
+```mermaid
+sequenceDiagram
+    participant Caller as Aufrufer
+    participant Init as Initialize-Database
+    participant Installer as Install-Sqlite.ps1
+    participant NuGet
+    participant Repo as SqliteDateiRepository
+    participant DB as SQLite
+    Init->>Installer: Laufzeit für AssemblyPath bereitstellen
+    Installer->>Installer: Plattform und Version prüfen
+    alt Laufzeitdateien aktuell
+        Installer-->>Init: Installation übersprungen
+    else Laufzeit fehlt oder ist veraltet
+        loop benötigte NuGet-Pakete
+            Installer->>NuGet: Paket herunterladen
+            NuGet-->>Installer: Paketdatei
+            Installer->>Installer: Paket entpacken und Dateien prüfen
+        end
+        Installer->>Installer: Assemblies, native Bibliothek und Versionsmarker ablegen
+        Installer->>Installer: temporäre Dateien entfernen
+    end
+    Init->>Repo: Repository mit Datenbank- und Assemblypfad erstellen
+    Repo->>Repo: SQLite-Assemblies laden und Provider initialisieren
+    Repo->>DB: Verbindung mit ReadWriteCreate öffnen
+    Repo->>Repo: Pfad-Kollation registrieren, falls plattformbedingt nötig
+    Repo->>DB: Einstellungen und Schema prüfen
+    opt Altes Datenbankschema erkannt
+        Repo->>DB: Metadaten und FTS-Inhalte transaktional migrieren
+    end
+    Repo->>DB: Tabellen und Indizes sicherstellen
+    Repo-->>Init: Repository-Instanz
+    Init-->>Caller: Repository-Instanz
+```
+
+Das Installationsskript lädt die plattformspezifischen verwalteten und nativen
+SQLite-Dateien nur dann, wenn Laufzeitversion oder Dateien nicht bereits
+passen. Fehler während der Installation oder Initialisierung werden
+weitergegeben; der Konstruktor schließt bei einem Fehler die Verbindung.
+
+### Datei-Metadaten abrufen
+
+```mermaid
+sequenceDiagram
+    participant Caller as Aufrufer oder Crawler
+    participant Repo as SqliteDateiRepository
+    participant DB as files_metadata
+    alt Einzelner Pfad
+        Caller->>Repo: Get(path)
+        Repo->>Repo: Pfad normalisieren und in Pfadteile zerlegen
+        Repo->>DB: SELECT nach Ordner, Dateiname und Endung
+        DB-->>Repo: Metadaten oder kein Treffer
+        Repo-->>Caller: Datei oder null
+    else Mehrere Pfade
+        Caller->>Repo: GetMany(paths)
+        Repo->>Repo: Pfade normalisieren und Duplikate entfernen
+        loop höchstens 300 Pfade pro Abfrage
+            Repo->>DB: VALUES-CTE mit Join auf den Pfadindex
+            DB-->>Repo: gefundene Metadaten
+        end
+        Repo-->>Caller: Dictionary vorhandener Dateien
+    end
+```
+
+Beide Abfragen liefern Metadaten, nicht den indizierten Dokumenttext. Pfad-
+und Dateischreibweisen werden entsprechend den Plattformregeln verglichen.
+
+### Dateien speichern und Volltextindex aktualisieren
+
+```mermaid
+sequenceDiagram
+    participant Caller as Aufrufer oder Crawler
+    participant Repo as SqliteDateiRepository
+    participant DB as SQLite
+    participant Meta as files_metadata
+    participant FTS as files_fts
+    Caller->>Repo: Save(file) oder SaveBatch(files)
+    Repo->>Repo: Pfade des Batches vorab validieren
+    Repo->>DB: BEGIN TRANSACTION
+    Repo->>Repo: vorbereitete Metadaten- und FTS-Kommandos erstellen
+    loop jede Datei im Batch
+        Repo->>Repo: Pfad in Ordner, Dateiname und Endung zerlegen
+        Repo->>Meta: Metadaten einfügen oder aktualisieren
+        Meta-->>Repo: Datei-ID
+        Repo->>FTS: alten FTS-Eintrag für Datei-ID löschen
+        opt HasContent = true
+            Repo->>FTS: neuen extrahierten Text einfügen
+        end
+    end
+    alt alle Dateien erfolgreich
+        Repo->>DB: COMMIT
+    else Fehler beim Speichern
+        Repo->>DB: ROLLBACK des gesamten Batches
+    end
+    Repo-->>Caller: abgeschlossen oder Fehler
+```
+
+`Save(file)` verwendet denselben Ablauf wie `SaveBatch()` mit genau einer
+Datei. Metadaten und Volltext werden atomar aktualisiert; bei Dateien ohne
+Inhalt wird ein vorhandener FTS-Eintrag entfernt, aber kein neuer angelegt.
+
+### Dateien aus dem Index entfernen
+
+```mermaid
+sequenceDiagram
+    participant Caller as Aufrufer oder Crawler
+    participant Repo as SqliteDateiRepository
+    participant DB as SQLite
+    participant FTS as files_fts
+    participant Meta as files_metadata
+    Caller->>Repo: Remove(path) oder RemoveBatch(paths)
+    Repo->>Repo: Pfade zerlegen und Duplikate entfernen
+    Repo->>DB: BEGIN TRANSACTION
+    loop Gruppen von höchstens 300 Pfaden
+        Repo->>FTS: FTS-Einträge anhand der Datei-IDs löschen
+        Repo->>Meta: passende Metadatensätze löschen
+    end
+    alt alle Gruppen erfolgreich
+        Repo->>DB: COMMIT
+    else Fehler beim Löschen
+        Repo->>DB: ROLLBACK des gesamten Aufrufs
+    end
+    Repo-->>Caller: abgeschlossen oder Fehler
+```
+
+`Remove(path)` delegiert an `RemoveBatch()` mit einem Pfad. Die gemeinsame
+Transaktion verhindert verwaiste Metadaten oder FTS-Treffer.
+
+### Dateien unter einem Ordner ermitteln
+
+```mermaid
+sequenceDiagram
+    participant Caller as Crawler
+    participant Repo as SqliteDateiRepository
+    participant DB as files_metadata
+    participant Path as PathUtil
+    Caller->>Repo: GetPathsUnder(folder)
+    Repo->>Repo: Ordnerpfad normalisieren
+    Repo->>DB: Verzeichniskandidaten lesen
+    loop jeder Kandidat
+        Repo->>Path: vollständigen Dateipfad zusammensetzen
+        Repo->>Path: IsSameOrUnder(path, folder)
+    end
+    Repo-->>Caller: passende Pfade
+```
+
+Der abschließende Pfadvergleich verhindert, dass Ordner mit nur gemeinsamem
+Namenspräfix fälschlich als Unterordner gelten.
+
+### Dateien synchronisieren
+
+```mermaid
+sequenceDiagram
+    participant Caller as Crawler
+    participant Sync as Sync-Files
+    participant Repo as SqliteDateiRepository
+    participant DB as SQLite
+    Caller->>Sync: Datei-Pipeline
+    loop je höchstens 300 zu prüfende Dateien
+        Sync->>Repo: GetMany(paths)
+        Repo->>DB: vorhandene Metadaten abfragen
+        DB-->>Repo: gespeicherte Datei-Metadaten
+        Repo-->>Sync: Dictionary vorhandener Dateien
+        Sync->>Sync: als Added, Updated oder Unchanged klassifizieren
+    end
+    Sync->>Repo: SaveBatch(geänderte Dateien)
+    Repo-->>Sync: Schreibvorgang abgeschlossen
+    Sync-->>Caller: Zähler für Added, Updated und Unchanged
+```
+
+Unveränderte Dateien werden nicht erneut gespeichert. `Sync-Files()` löscht
+keine Dateien, die im aktuellen Scan fehlen.
+
+### Volltextsuche ausführen
+
+```mermaid
+sequenceDiagram
+    participant Caller as Aufrufer
+    participant Query as Search-Query
+    participant Repo as SqliteDateiRepository
+    participant FTS as files_fts
+    participant Meta as files_metadata
+    Caller->>Query: Query, Limit, Extension
+    Query->>Repo: Search(Query, Limit, Extension)
+    Repo->>Repo: Suchparameter und Limit validieren
+    Repo->>FTS: FTS5-MATCH, Rang und Snippet berechnen
+    FTS->>Meta: Treffer über Datei-ID mit Metadaten verknüpfen
+    Meta-->>Repo: Metadaten, Rang und Snippet
+    Repo-->>Query: Treffer mit File, Snippet und Score
+    Query-->>Caller: Suchergebnisse
+```
+
+Ein leerer Suchtext liefert keine Treffer. Das Limit ist auf 1 bis 1000
+begrenzt; der Dateiendungsfilter ist optional.
+
+### Datenbankverbindung schließen
+
+```mermaid
+sequenceDiagram
+    participant Caller as Aufrufer
+    participant Repo as SqliteDateiRepository
+    participant DB as SQLite-Verbindung
+    Caller->>Repo: Dispose()
+    alt Verbindung noch offen
+        Repo->>Repo: Zustand auf disposed setzen
+        Repo->>DB: Verbindung schließen
+    else bereits geschlossen
+        Repo-->>Caller: keine weitere Aktion
+    end
+    Repo-->>Caller: abgeschlossen
+```
+
+Der Fehler `ParentContainsErrorRecordException: Cannot find an overload for
+"CreateCollation" and the argument count: "2"` entstand beim Initialisieren
+der Repository-Verbindung, nicht bei einer SQL-Abfrage. `RegisterPathCollation()`
+übergab einen `System.Func[string, string, int]`, Microsoft.Data.Sqlite erwartet
+aber `System.Comparison[string]`. PowerShell konnte deshalb die passende
+`CreateCollation`-Overload nicht binden. Der Aufruf erfolgt nach dem Öffnen der
+Verbindung und vor der Schema-Initialisierung. Der Delegate-Typ ist inzwischen
+korrigiert.
+
 ## Zeitstempel, Status und Neustart
 
 SQLite speichert `CreationTimeUtc`, `LastWriteTimeUtc` und `IndexedAtUtc`
