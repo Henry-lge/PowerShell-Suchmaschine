@@ -10,7 +10,7 @@ param(
     [string[]]$ExcludePath = @(),
 
     # Optionaler FTS5-Suchausdruck; ohne Wert wird nur gescannt.
-    [string]$Query = "",
+    [string]$Query = "ist",
 
     # Persistenter SQLite-Index.
     [string]$DatabasePath = (Join-Path $PSScriptRoot "data/index.sqlite3"),

@@ -88,6 +88,21 @@ Describe "SqliteDateiRepository" {
         $stored.Extension | Should -Be ".txt"
     }
 
+    It "compares file paths case-insensitively except on Linux" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot "CaseSensitive.txt")
+        $script:database.Save($file)
+
+        $alternateCasePath = Join-Path $script:testRoot "CASESENSITIVE.TXT"
+        $stored = $script:database.Get($alternateCasePath)
+
+        if ($global:IsLinux) {
+            $stored | Should -BeNullOrEmpty
+        }
+        else {
+            $stored.Path | Should -Be $file.Path
+        }
+    }
+
     It "updates an existing path instead of creating a duplicate" {
         $file = New-TestDatei -Path (Join-Path $script:testRoot "notes.txt")
         $script:database.Save($file)

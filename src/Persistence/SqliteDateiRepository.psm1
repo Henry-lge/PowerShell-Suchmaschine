@@ -949,25 +949,26 @@ RETURNING id;
         }
 
         $comparison = [PathUtil]::GetComparison()
+        $collation = [System.Comparison[string]]{
+            param([string]$left, [string]$right)
+
+            if ($null -eq $left) {
+                if ($null -eq $right) {
+                    return 0
+                }
+
+                return -1
+            }
+
+            if ($null -eq $right) {
+                return 1
+            }
+
+            return [string]::Compare($left, $right, $comparison)
+        }
         $this._connection.CreateCollation(
             "PATHUTIL_NOCASE",
-            [System.Func[string, string, int]]{
-                param([string]$left, [string]$right)
-
-                if ($null -eq $left) {
-                    if ($null -eq $right) {
-                        return 0
-                    }
-
-                    return -1
-                }
-
-                if ($null -eq $right) {
-                    return 1
-                }
-
-                return [string]::Compare($left, $right, $comparison)
-            }
+            $collation
         )
     }
 
