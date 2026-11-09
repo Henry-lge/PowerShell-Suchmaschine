@@ -679,7 +679,7 @@ INSERT INTO files_metadata_v2 (
                         $directory = [System.IO.Path]::GetDirectoryName($path)
                         $fullName = [System.IO.Path]::GetFileName($path)
                         $extension = [System.IO.Path]::GetExtension($fullName)
-                        $name = [System.IO.Path]::GetFileNameWithoutExtension($fullName)
+                        $name = $fullName.Substring(0, $fullName.Length - $extension.Length)
                         $insertCommand.Parameters['$idParameter'].Value = $legacyFile.Id
                         $insertCommand.Parameters['$directoryParameter'].Value = $directory
                         $insertCommand.Parameters['$filenameParameter'].Value = $name
@@ -915,10 +915,13 @@ RETURNING id;
             throw "File path must include a file name."
         }
 
+        $extension = [System.IO.Path]::GetExtension($fullName)
+        $name = $fullName.Substring(0, $fullName.Length - $extension.Length)
+
         return [PSCustomObject]@{
             Directory = [System.IO.Path]::GetDirectoryName($normalizedPath)
-            Name = [System.IO.Path]::GetFileNameWithoutExtension($fullName)
-            Extension = [System.IO.Path]::GetExtension($fullName)
+            Name = $name
+            Extension = $extension
         }
     }
 
