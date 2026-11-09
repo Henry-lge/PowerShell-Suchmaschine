@@ -11,6 +11,7 @@ Eine ausführliche Erklärung der Klassen, Reader und Abläufe steht in der
 ## Voraussetzungen
 
 - PowerShell 7.2 oder neuer
+- .Net 10.0  Download: https://dotnet.microsoft.com/en-us/download/dotnet/10.0
 - Für SQLite: Internetzugriff beim erstmaligen Einrichten der SQLite-Laufzeit
   (NuGet-Pakete werden heruntergeladen)
 - Für bestimmte Archivformate: `tar` oder 7-Zip, abhängig vom Format und den
@@ -111,7 +112,8 @@ werden. Die aktuelle Größenbegrenzung ist über
 | [src/Model/](./src/Model/) | Datei- und Scan-Fehlermodelle. |
 | [src/Persistence/](./src/Persistence/) | Repository-Schnittstelle, In-Memory- und SQLite-Implementierung sowie SQLite-Laufzeitinstallation. |
 | [src/Common/](./src/Common/) | Plattformgerechter Pfadvergleich und Erkennung von Cloud-Platzhaltern. |
-| [tests/](./tests/) | Pester-Tests und ein separat startbarer Performance-Benchmark. |
+| [src/GUI/](./src/GUI/) | Dateien für Benuteroberfläche |
+| [tests/](./tests/) | Pester-Tests für die SQLite-Implementierung. |
 | `lib/sqlite/` | Lokal abgelegte SQLite-.NET- und native Laufzeitdateien; wird bei Bedarf eingerichtet und nicht versioniert. |
 
 Die Architektur trennt Dateisystemdurchlauf, Inhaltsextraktion und Speicherung.
