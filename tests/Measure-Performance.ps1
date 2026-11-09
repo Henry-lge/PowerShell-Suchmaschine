@@ -168,7 +168,7 @@ class TimingDocScanner : DocScanner {
     [string] ReadContent([System.IO.FileInfo]$file) {
         $startTimestamp = [System.Diagnostics.Stopwatch]::GetTimestamp()
         try {
-            return base.ReadContent($file)
+            return ([DocScanner]$this).ReadContent($file)
         }
         finally {
             $this.ReadContentMilliseconds += (
