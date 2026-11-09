@@ -1,5 +1,5 @@
 #requires -Version 7.2
-param([string]$DatabasePath = (Join-Path $PSScriptRoot 'data/search.sqlite3'))
+param([string]$DatabasePath = (Join-Path $PSScriptRoot 'data/index.sqlite3'))
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
