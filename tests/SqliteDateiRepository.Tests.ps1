@@ -22,6 +22,23 @@ Describe "SqliteDateiRepository" {
             return $file
         }
 
+        function Invoke-TestSql {
+            param([Parameter(Mandatory)][string]$Sql)
+
+            $connectionProperty = [SqliteDateiRepository].GetProperty(
+                "_connection",
+                [System.Reflection.BindingFlags]"Instance,Public,NonPublic"
+            )
+            $command = $connectionProperty.GetValue($script:database).CreateCommand()
+            try {
+                $command.CommandText = $Sql
+                return $command.ExecuteScalar()
+            }
+            finally {
+                $command.Dispose()
+            }
+        }
+
         $script:testRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
             "powershell-suchmaschine-tests-" + [guid]::NewGuid().ToString("N")
         )
@@ -123,6 +140,25 @@ Describe "SqliteDateiRepository" {
             Should -Be 0
     }
 
+    It "uses metadata IDs as FTS rowids despite gaps and updates" {
+        $metadataOnly = New-TestDatei -Path (Join-Path $script:testRoot "metadata.txt")
+        $metadataOnly.HasContent = $false
+        $file = New-TestDatei -Path (Join-Path $script:testRoot "indexed.txt")
+        $script:database.SaveBatch([Datei[]]@($metadataOnly, $file))
+        $script:database.Save($file)
+
+        (Invoke-TestSql "SELECT rowid FROM files_fts;") | Should -Be 2
+        (Invoke-TestSql "SELECT count(*) FROM files_fts WHERE rowid = file_id;") |
+            Should -Be 1
+        (Search-Query -Database $script:database -Query "originalmarker").File.Path |
+            Should -Be $file.Path
+
+        $file.HasContent = $false
+        $script:database.Save($file)
+        (Invoke-TestSql "SELECT count(*) FROM files_fts;") | Should -Be 0
+        $script:database.Get($file.Path).HasContent | Should -BeFalse
+    }
+
     It "indexes full text and returns a snippet and positive relevance score" {
         $file = New-TestDatei -Path (Join-Path $script:testRoot "alpha.txt")
         $file.Content = "A unique searchmarker appears in this document."
@@ -171,6 +207,57 @@ Describe "SqliteDateiRepository" {
         $script:database.Get($file.Path) | Should -BeNullOrEmpty
         (Search-Query -Database $script:database -Query "deletemarker").Count |
             Should -Be 0
+    }
+
+    It "removes multiple batches including duplicate and missing paths" {
+        $files = [Datei[]]@(for ($index = 0; $index -lt 605; $index++) {
+            New-TestDatei -Path (Join-Path $script:testRoot "remove-$index.txt")
+        })
+        $keep = New-TestDatei -Path (Join-Path $script:testRoot "keep.txt")
+        $script:database.SaveBatch($files + [Datei[]]@($keep))
+        $paths = [string[]]@($files | ForEach-Object { $_.Path })
+        $paths += @($files[0].Path, (Join-Path $script:testRoot "missing.txt"))
+
+        $script:database.RemoveBatch($paths)
+        $script:database.RemoveBatch([string[]]@())
+
+        $script:database.GetPathsUnder($script:testRoot) | Should -HaveCount 1
+        (Invoke-TestSql "SELECT count(*) FROM files_fts;") | Should -Be 1
+        (Search-Query -Database $script:database -Query "originalmarker").File.Path |
+            Should -Be $keep.Path
+    }
+
+    It "validates all removal paths before deleting anything" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot "keep.txt")
+        $script:database.Save($file)
+
+        { $script:database.RemoveBatch([string[]]@($file.Path, "")) } | Should -Throw
+
+        $script:database.Get($file.Path) | Should -Not -BeNullOrEmpty
+        (Invoke-TestSql "SELECT count(*) FROM files_fts;") | Should -Be 1
+    }
+
+    It "rolls back FTS and metadata deletions across removal batches" {
+        $files = [Datei[]]@(for ($index = 0; $index -lt 301; $index++) {
+            New-TestDatei -Path (Join-Path $script:testRoot "rollback-$index.txt")
+        })
+        $script:database.SaveBatch($files)
+        [void](Invoke-TestSql @"
+CREATE TRIGGER reject_removal BEFORE DELETE ON files_metadata
+WHEN OLD.filename = 'rollback-300'
+BEGIN
+    SELECT RAISE(ABORT, 'rejected by removal test');
+END;
+"@)
+
+        {
+            $script:database.RemoveBatch([string[]]@($files | ForEach-Object { $_.Path }))
+        } | Should -Throw "*rejected by removal test*"
+
+        (Invoke-TestSql "SELECT count(*) FROM files_metadata;") | Should -Be 301
+        (Invoke-TestSql "SELECT count(*) FROM files_fts;") | Should -Be 301
+        @(Search-Query -Database $script:database -Query "originalmarker" -Limit 1000) |
+            Should -HaveCount 301
     }
 
     It "returns paths under a folder without matching similarly prefixed folders" {
@@ -291,6 +378,73 @@ END;
         $results[0].File.Path | Should -Be $file.Path
     }
 
+    It "migrates independent FTS rowids once and preserves searchable content" {
+        $metadataOnly = New-TestDatei -Path (Join-Path $script:testRoot "metadata.txt")
+        $metadataOnly.HasContent = $false
+        $first = New-TestDatei -Path (Join-Path $script:testRoot "first.txt")
+        $second = New-TestDatei -Path (Join-Path $script:testRoot "second.txt")
+        $script:database.SaveBatch([Datei[]]@($metadataOnly, $first, $second))
+        [void](Invoke-TestSql @"
+DELETE FROM files_fts;
+INSERT INTO files_fts(rowid, file_id, content) VALUES
+    (1, 3, 'secondmarker'), (3, 2, 'firstmarker');
+PRAGMA user_version = 0;
+"@)
+        $script:database.Dispose()
+        $script:database = Initialize-Database `
+            -DatabasePath $script:databasePath `
+            -AssemblyPath $script:assemblyPath
+
+        (Invoke-TestSql "SELECT count(*) FROM files_fts WHERE rowid != file_id;") |
+            Should -Be 0
+        (Invoke-TestSql "PRAGMA user_version;") | Should -Be 1
+        (Search-Query -Database $script:database -Query "firstmarker").File.Path |
+            Should -Be $first.Path
+        (Search-Query -Database $script:database -Query "secondmarker").File.Path |
+            Should -Be $second.Path
+
+        [void](Invoke-TestSql @"
+CREATE TRIGGER guard_fts_migration BEFORE INSERT ON files_fts_data
+BEGIN
+    SELECT RAISE(ABORT, 'unexpected FTS rebuild');
+END;
+"@)
+        $script:database.Dispose()
+        $script:database = Initialize-Database `
+            -DatabasePath $script:databasePath `
+            -AssemblyPath $script:assemblyPath
+        (Invoke-TestSql "SELECT count(*) FROM sqlite_master WHERE name = 'guard_fts_migration';") |
+            Should -Be 1
+        [void](Invoke-TestSql "DROP TRIGGER guard_fts_migration;")
+
+        $script:database.Save($first)
+        (Search-Query -Database $script:database -Query "firstmarker").Count | Should -Be 0
+        $script:database.Remove($second.Path)
+        (Search-Query -Database $script:database -Query "secondmarker").Count | Should -Be 0
+        (Invoke-TestSql "SELECT count(*) FROM files_fts;") | Should -Be 1
+    }
+
+    It "rolls back an unsuccessful FTS rowid migration" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot "duplicate.txt")
+        $script:database.Save($file)
+        [void](Invoke-TestSql @"
+INSERT INTO files_fts(rowid, file_id, content) VALUES (99, 1, 'duplicatemarker');
+PRAGMA user_version = 0;
+"@)
+
+        {
+            $reopened = Initialize-Database `
+                -DatabasePath $script:databasePath `
+                -AssemblyPath $script:assemblyPath
+            $reopened.Dispose()
+        } | Should -Throw
+
+        (Invoke-TestSql "PRAGMA user_version;") | Should -Be 0
+        (Invoke-TestSql "SELECT count(*) FROM files_fts;") | Should -Be 2
+        (Invoke-TestSql "SELECT count(*) FROM sqlite_master WHERE name = 'files_fts_rowid';") |
+            Should -Be 0
+    }
+
     It "migrates the legacy full-path schema without losing searchable content" {
         $path = Join-Path $script:testRoot "legacy.txt"
         $connectionProperty = [SqliteDateiRepository].GetProperty(
@@ -302,6 +456,7 @@ END;
         $command.CommandText = @"
 DROP TABLE files_fts;
 DROP TABLE files_metadata;
+PRAGMA user_version = 0;
 CREATE TABLE files_metadata (
     id INTEGER PRIMARY KEY,
     path_key TEXT NOT NULL UNIQUE,
@@ -368,6 +523,9 @@ INSERT INTO files_fts(path_key, content) VALUES ('LEGACYKEY', 'legacysearchmarke
         $columnNames | Should -Contain "directory_path"
         $columnNames | Should -Not -Contain "path"
         $columnNames | Should -Not -Contain "path_key"
+        (Invoke-TestSql "SELECT rowid FROM files_fts;") | Should -Be 23
+        $script:database.Remove($path)
+        (Invoke-TestSql "SELECT count(*) FROM files_fts;") | Should -Be 0
     }
 
     It "validates the search limit" {
