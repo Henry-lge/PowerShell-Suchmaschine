@@ -997,9 +997,44 @@ function Sync-Files {
     begin {
         $pending = [System.Collections.Generic.List[Datei]]::new()
         $filesToCheck = [System.Collections.Generic.List[Datei]]::new()
+        $checkBatchSize = 300
         $added = 0
         $updated = 0
         $unchanged = 0
+
+        $flushBatch = {
+            if ($filesToCheck.Count -eq 0) {
+                return
+            }
+
+            $storedFiles = $Database.GetMany(
+                [string[]]@($filesToCheck | ForEach-Object { $_.Path })
+            )
+
+            foreach ($fileToCheck in $filesToCheck) {
+                $stored = $null
+                $normalizedPath = [PathUtil]::Normalize($fileToCheck.Path)
+                [void]$storedFiles.TryGetValue($normalizedPath, [ref]$stored)
+                if (
+                    $null -ne $stored -and
+                    $stored.LastWriteTimeUtc.Ticks -eq $fileToCheck.LastWriteTimeUtc.Ticks -and
+                    (-not $stored.IsCloudOnly -or $fileToCheck.IsCloudOnly)
+                ) {
+                    $unchanged++
+                    continue
+                }
+
+                if ($null -eq $stored) {
+                    $added++
+                }
+                else {
+                    $updated++
+                }
+                $pending.Add($fileToCheck)
+            }
+
+            $filesToCheck.Clear()
+        }
     }
     process {
         foreach ($file in $Files) {
@@ -1008,34 +1043,13 @@ function Sync-Files {
             }
 
             $filesToCheck.Add($file)
+            if ($filesToCheck.Count -ge $checkBatchSize) {
+                . $flushBatch
+            }
         }
     }
     end {
-        $storedFiles = $Database.GetMany(
-            [string[]]@($filesToCheck | ForEach-Object { $_.Path })
-        )
-
-        foreach ($file in $filesToCheck) {
-            $stored = $null
-            $normalizedPath = [PathUtil]::Normalize($file.Path)
-            [void]$storedFiles.TryGetValue($normalizedPath, [ref]$stored)
-            if (
-                $null -ne $stored -and
-                $stored.LastWriteTimeUtc.Ticks -eq $file.LastWriteTimeUtc.Ticks -and
-                (-not $stored.IsCloudOnly -or $file.IsCloudOnly)
-            ) {
-                $unchanged++
-                continue
-            }
-
-            if ($null -eq $stored) {
-                $added++
-            }
-            else {
-                $updated++
-            }
-            $pending.Add($file)
-        }
+        . $flushBatch
 
         $Database.SaveBatch($pending.ToArray())
         return [PSCustomObject]@{
