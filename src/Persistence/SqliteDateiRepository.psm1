@@ -69,7 +69,6 @@ class SqliteDateiRepository : DateiRepository {
         )
         try {
             $this._connection.Open()
-            $this.RegisterPathCollation()
             $this.InitializeSchema()
         }
         catch {
@@ -938,38 +937,9 @@ RETURNING id;
 
     hidden [string] GetPathCollation() {
         if ([PathUtil]::GetComparison() -eq [System.StringComparison]::OrdinalIgnoreCase) {
-            return "PATHUTIL_NOCASE"
+            return "NOCASE"
         }
         return "BINARY"
-    }
-
-    hidden [void] RegisterPathCollation() {
-        if ([PathUtil]::GetComparison() -ne [System.StringComparison]::OrdinalIgnoreCase) {
-            return
-        }
-
-        $comparison = [PathUtil]::GetComparison()
-        $collation = [System.Comparison[string]]{
-            param([string]$left, [string]$right)
-
-            if ($null -eq $left) {
-                if ($null -eq $right) {
-                    return 0
-                }
-
-                return -1
-            }
-
-            if ($null -eq $right) {
-                return 1
-            }
-
-            return [string]::Compare($left, $right, $comparison)
-        }
-        $this._connection.CreateCollation(
-            "PATHUTIL_NOCASE",
-            $collation
-        )
     }
 
     hidden [void] AddPathParameters([object]$command, [object]$parts) {
