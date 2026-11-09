@@ -77,16 +77,17 @@ jobs:
             throw "SQLite database was not created at $databasePath"
           }
 
+          # ANSI-Farbcodes aus der Format-List-Ausgabe entfernen, damit die
+          # Pfad-Zeilen gemaess regularem Ausdruck matchen.
+          $output = $output | ForEach-Object {
+            $_ -replace "\x1b\[[0-9;]*m", ""
+          }
           $joined = $output -join [Environment]::NewLine
           foreach ($expected in @("notiz.txt", "lesen.md", "daten.json")) {
-            if ($joined -notmatch [regex]::Escape($expected)) {
+            if ($joined -notmatch "(?m)^\s*Pfad\s*:\s*[^\r\n]*[\\/]$([regex]::Escape($expected))\s*$") {
               $output | ForEach-Object { Write-Host $_ }
               throw "Smoke test: no search hit for '$expected'"
             }
-          }
-          if ($joined -match "Keine Treffer") {
-            $output | ForEach-Object { Write-Host $_ }
-            throw "Smoke test: search returned no hits"
           }
           Write-Host "Smoke test passed on $([System.Runtime.InteropServices.RuntimeInformation]::OSDescription)."
 
