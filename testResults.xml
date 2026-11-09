@@ -1,0 +1,35 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<test-results xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="nunit_schema_2.5.xsd" name="Pester" total="18" errors="0" failures="0" not-run="0" inconclusive="0" ignored="0" skipped="0" invalid="0" date="2026-11-09" time="13:15:54">
+  <environment platform="Linux" clr-version="10.0.14" os-version="7.0.0-1017-azure" user-domain="" cwd="/home/runner/work/PowerShell-Suchmaschine/PowerShell-Suchmaschine" nunit-version="2.5.8.0" machine-name="runnervm7aw5e" user="runner" />
+  <culture-info current-culture="" current-uiculture="" />
+  <test-suite type="TestFixture" name="Pester" executed="True" result="Success" success="True" time="3.1823" asserts="0" description="Pester">
+    <results>
+      <test-suite type="TestFixture" name="/home/runner/work/PowerShell-Suchmaschine/PowerShell-Suchmaschine/tests/SqliteDateiRepository.Tests.ps1" executed="True" result="Success" success="True" time="3.1823" asserts="0" description="/home/runner/work/PowerShell-Suchmaschine/PowerShell-Suchmaschine/tests/SqliteDateiRepository.Tests.ps1">
+        <results>
+          <test-suite type="TestFixture" name="SqliteDateiRepository" executed="True" result="Success" success="True" time="2.6961" asserts="0" description="SqliteDateiRepository">
+            <results>
+              <test-case description="creates its database and schema on initialization" name="SqliteDateiRepository.creates its database and schema on initialization" time="1.7253" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="saves and retrieves file metadata" name="SqliteDateiRepository.saves and retrieves file metadata" time="0.1524" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="reconstructs the original path casing while exposing a normalized extension" name="SqliteDateiRepository.reconstructs the original path casing while exposing a normalized extension" time="0.0103" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="updates an existing path instead of creating a duplicate" name="SqliteDateiRepository.updates an existing path instead of creating a duplicate" time="0.031" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="indexes full text and returns a snippet and positive relevance score" name="SqliteDateiRepository.indexes full text and returns a snippet and positive relevance score" time="0.02" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="filters search results by extension" name="SqliteDateiRepository.filters search results by extension" time="0.0197" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="returns no results for blank queries and unmatched terms" name="SqliteDateiRepository.returns no results for blank queries and unmatched terms" time="0.0102" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="removes a file from both metadata and the full-text index" name="SqliteDateiRepository.removes a file from both metadata and the full-text index" time="0.0239" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="returns paths under a folder without matching similarly prefixed folders" name="SqliteDateiRepository.returns paths under a folder without matching similarly prefixed folders" time="0.0153" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="filters wildcard characters literally when finding paths under a folder" name="SqliteDateiRepository.filters wildcard characters literally when finding paths under a folder" time="0.0108" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="retrieves many paths in bounded SQLite batches" name="SqliteDateiRepository.retrieves many paths in bounded SQLite batches" time="0.4029" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="uses a transaction to persist a batch and rejects invalid records" name="SqliteDateiRepository.uses a transaction to persist a batch and rejects invalid records" time="0.0815" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="rolls back every write when a record fails during a transaction" name="SqliteDateiRepository.rolls back every write when a record fails during a transaction" time="0.0233" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="synchronizes changed files and skips unchanged files" name="SqliteDateiRepository.synchronizes changed files and skips unchanged files" time="0.0235" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="retains indexed content when reopened from disk" name="SqliteDateiRepository.retains indexed content when reopened from disk" time="0.0188" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="migrates the legacy full-path schema without losing searchable content" name="SqliteDateiRepository.migrates the legacy full-path schema without losing searchable content" time="0.0623" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="validates the search limit" name="SqliteDateiRepository.validates the search limit" time="0.0257" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="throws when used after disposal" name="SqliteDateiRepository.throws when used after disposal" time="0.011" asserts="0" success="True" result="Success" executed="True" />
+            </results>
+          </test-suite>
+        </results>
+      </test-suite>
+    </results>
+  </test-suite>
+</test-results>

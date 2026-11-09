@@ -380,16 +380,13 @@ WHERE id IN (
         if (-not [System.IO.Path]::EndsInDirectorySeparator($prefix)) {
             $prefix += [System.IO.Path]::DirectorySeparatorChar
         }
-        $escapedPrefix = $prefix.Replace("\", "\\").Replace("%", "\%").Replace("_", "\_")
-        $collation = $this.GetPathCollation()
         $paths = [System.Collections.Generic.List[string]]::new()
         $command = $this.NewCommand(
             "SELECT directory_path, filename, extension FROM files_metadata " +
-            "WHERE directory_path = `$folderParameter COLLATE $collation " +
-            "OR directory_path LIKE `$prefixParameter ESCAPE '\';"
+            "WHERE directory_path = `$folderParameter " +
+            "OR directory_path IS NOT NULL;"
         )
         [void]$command.Parameters.AddWithValue('$folderParameter', $folder)
-        [void]$command.Parameters.AddWithValue('$prefixParameter', "$escapedPrefix%")
 
         try {
             $reader = $command.ExecuteReader()
