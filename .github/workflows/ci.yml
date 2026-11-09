@@ -38,7 +38,7 @@ jobs:
         run: |
           Import-Module Pester -RequiredVersion 5.7.1 -Force
           $config = New-PesterConfiguration
-          $config.Run.Path = './tests/SqliteDateiRepository.Tests.ps1'
+          $config.Run.Path = @(Get-ChildItem ./tests -Filter '*.Tests.ps1' -Recurse | ForEach-Object { $_.FullName })
           $config.Run.PassThru = $true
           $config.TestResult.Enabled = $true
           $config.TestResult.OutputPath = './testResults.xml'

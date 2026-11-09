@@ -4,6 +4,10 @@ using module "./DateiRepository.psm1"
 
 #requires -Version 7.2
 
+if (-not ('Suchmaschine.Persistence.DatabasePool' -as [type])) {
+    Add-Type -Path (Join-Path $PSScriptRoot 'DatabasePool.cs') -ErrorAction Stop
+}
+
 class SqliteProvider {
     static [void] Load([string]$assemblyPath) {
         $assemblies = @(
@@ -33,6 +37,26 @@ class SqliteProvider {
 class SqliteDateiRepository : DateiRepository {
     hidden [object]$_connection
     hidden [bool]$_disposed = $false
+    hidden [object]$_lease
+
+    # Construct this adapter in the borrowing worker, never in the parent runspace.
+    SqliteDateiRepository([object]$lease) {
+        if ($null -eq $lease -or $lease.GetType().FullName -ne 'Suchmaschine.Persistence.DatabaseLease') {
+            throw 'A DatabaseLease is required.'
+        }
+        $this._connection = $lease.ClaimRepositoryConnection()
+        $this._lease = $lease
+    }
+
+    # Used only during serial pool initialization to transfer ownership.
+    hidden [object] DetachConnection() {
+        $this.EnsureOpen()
+        if ($null -ne $this._lease) { throw 'Cannot detach a leased connection.' }
+        $connection = $this._connection
+        $this._connection = $null
+        $this._disposed = $true
+        return $connection
+    }
 
     SqliteDateiRepository([string]$databasePath, [string]$assemblyPath) {
         if ([string]::IsNullOrWhiteSpace($databasePath)) {
@@ -484,7 +508,10 @@ WHERE id IN (
         }
 
         $this._disposed = $true
-        if ($null -ne $this._connection) {
+        if ($null -ne $this._lease) {
+            $this._lease.Dispose()
+        }
+        elseif ($null -ne $this._connection) {
             $this._connection.Dispose()
         }
     }
@@ -955,6 +982,45 @@ RETURNING id;
         if ($this._disposed) {
             throw "SqliteDateiRepository is already disposed."
         }
+        if ($null -ne $this._lease) {
+            $this._lease.ThrowIfReturned()
+        }
+    }
+}
+
+function Initialize-DatabasePool {
+    <#
+    .SYNOPSIS
+    Opens a bounded pool serially. Share only the returned C# pool with workers.
+    .DESCRIPTION
+    Borrow(timeoutMilliseconds) returns an exclusive lease. In the worker create
+    [SqliteDateiRepository]::new($lease), and release it in finally with Dispose().
+    Pool Dispose wakes waiters and defers closing outstanding connections to return.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string]$DatabasePath,
+
+        [ValidateRange(1, 1024)]
+        [int]$PoolSize = 4,
+
+        [string]$AssemblyPath = (Join-Path $PSScriptRoot '../../lib/sqlite')
+    )
+
+    & (Join-Path $PSScriptRoot 'Install-Sqlite.ps1') -Destination $AssemblyPath
+    $connections = [System.Collections.Generic.List[System.IDisposable]]::new()
+    try {
+        for ($index = 0; $index -lt $PoolSize; $index++) {
+            $repository = [SqliteDateiRepository]::new($DatabasePath, $AssemblyPath)
+            $connections.Add($repository.DetachConnection())
+        }
+        return New-Object -TypeName Suchmaschine.Persistence.DatabasePool -ArgumentList (,$connections.ToArray())
+    }
+    catch {
+        foreach ($connection in $connections) { $connection.Dispose() }
+        throw
     }
 }
 
@@ -1081,4 +1147,4 @@ function Search-Query {
     return $Database.Search($Query, $Limit, $Extension)
 }
 
-Export-ModuleMember -Function Initialize-Database, Add-File, Sync-Files, Search-Query
+Export-ModuleMember -Function Initialize-Database, Initialize-DatabasePool, Add-File, Sync-Files, Search-Query
