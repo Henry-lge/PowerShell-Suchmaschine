@@ -56,6 +56,14 @@ class DateiRepository {
         throw "Remove() must be implemented by a derived class."
     }
 
+    # Entfernt mehrere Dateien. Abgeleitete Repositories können die
+    # Operationen in einer Transaktion bündeln.
+    [void] RemoveBatch([string[]]$paths) {
+        foreach ($path in $paths) {
+            $this.Remove($path)
+        }
+    }
+
     # Gibt alle gespeicherten Pfade im Ordner und seinen Unterordnern zurück.
     # Damit werden Dateien gefunden, die seit dem letzten Scan gelöscht wurden.
     [string[]] GetPathsUnder([string]$folderPath) {
@@ -107,6 +115,12 @@ class InMemoryDateiRepository : DateiRepository {
 
     [void] Remove([string]$path) {
         [void]$this._store.Remove($path)
+    }
+
+    [void] RemoveBatch([string[]]$paths) {
+        foreach ($path in $paths) {
+            [void]$this._store.Remove($path)
+        }
     }
 
     [string[]] GetPathsUnder([string]$folderPath) {

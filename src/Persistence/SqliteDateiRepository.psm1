@@ -255,41 +255,111 @@ JOIN files_metadata AS metadata
     }
 
     [void] Remove([string]$path) {
+        $this.RemoveBatch([string[]]@($path))
+    }
+
+    [void] RemoveBatch([string[]]$paths) {
         $this.EnsureOpen()
-        $parts = $this.GetPathParts($path)
+        if ($null -eq $paths -or $paths.Count -eq 0) {
+            return
+        }
+
+        $pathParts = [System.Collections.Generic.List[object]]::new()
+        $seenPaths = [System.Collections.Generic.HashSet[string]]::new(
+            [PathUtil]::GetComparer()
+        )
+        foreach ($path in $paths) {
+            $parts = $this.GetPathParts($path)
+            $normalizedPath = [PathUtil]::Normalize($path)
+            if ($seenPaths.Add($normalizedPath)) {
+                $pathParts.Add($parts)
+            }
+        }
+
+        if ($pathParts.Count -eq 0) {
+            return
+        }
+
         $collation = $this.GetPathCollation()
         $transaction = $this._connection.BeginTransaction()
 
         try {
-            $ftsCommand = $this.NewCommand(
-                "DELETE FROM files_fts WHERE file_id IN (" +
-                "SELECT id FROM files_metadata " +
-                "WHERE directory_path = `$directoryParameter COLLATE $collation " +
-                "AND filename = `$filenameParameter COLLATE $collation " +
-                "AND extension = `$extensionParameter COLLATE $collation);",
-                $transaction
-            )
-            $this.AddPathParameters($ftsCommand, $parts)
-            try {
-                [void]$ftsCommand.ExecuteNonQuery()
-            }
-            finally {
-                $ftsCommand.Dispose()
-            }
+            $batchSize = 300
+            for ($offset = 0; $offset -lt $pathParts.Count; $offset += $batchSize) {
+                $count = [Math]::Min($batchSize, $pathParts.Count - $offset)
+                $values = [System.Collections.Generic.List[string]]::new()
+                for ($index = 0; $index -lt $count; $index++) {
+                    $parameterIndex = $index * 3
+                    $values.Add(
+                        "(`$directory$parameterIndex, `$filename$parameterIndex, `$extension$parameterIndex)"
+                    )
+                }
 
-            $metadataCommand = $this.NewCommand(
-                "DELETE FROM files_metadata " +
-                "WHERE directory_path = `$directoryParameter COLLATE $collation " +
-                "AND filename = `$filenameParameter COLLATE $collation " +
-                "AND extension = `$extensionParameter COLLATE $collation;",
-                $transaction
-            )
-            $this.AddPathParameters($metadataCommand, $parts)
-            try {
-                [void]$metadataCommand.ExecuteNonQuery()
-            }
-            finally {
-                $metadataCommand.Dispose()
+                $requestedCte = @"
+WITH requested(directory_path, filename, extension) AS (
+    VALUES $($values -join ", ")
+)
+"@
+                $ftsCommand = $null
+                $metadataCommand = $null
+                try {
+                    $ftsSql = @"
+$requestedCte
+DELETE FROM files_fts
+WHERE file_id IN (
+    SELECT metadata.id
+    FROM files_metadata AS metadata
+    JOIN requested
+        ON metadata.directory_path = requested.directory_path COLLATE $collation
+        AND metadata.filename = requested.filename COLLATE $collation
+        AND metadata.extension = requested.extension COLLATE $collation
+);
+"@
+                    $metadataSql = @"
+$requestedCte
+DELETE FROM files_metadata
+WHERE id IN (
+    SELECT metadata.id
+    FROM files_metadata AS metadata
+    JOIN requested
+        ON metadata.directory_path = requested.directory_path COLLATE $collation
+        AND metadata.filename = requested.filename COLLATE $collation
+        AND metadata.extension = requested.extension COLLATE $collation
+);
+"@
+                    $ftsCommand = $this.NewCommand($ftsSql, $transaction)
+                    $metadataCommand = $this.NewCommand($metadataSql, $transaction)
+
+                    for ($index = 0; $index -lt $count; $index++) {
+                        $parameterIndex = $index * 3
+                        $parts = $pathParts[$offset + $index]
+                        foreach ($command in @($ftsCommand, $metadataCommand)) {
+                            [void]$command.Parameters.AddWithValue(
+                                "`$directory$parameterIndex",
+                                $parts.Directory
+                            )
+                            [void]$command.Parameters.AddWithValue(
+                                "`$filename$parameterIndex",
+                                $parts.Name
+                            )
+                            [void]$command.Parameters.AddWithValue(
+                                "`$extension$parameterIndex",
+                                $parts.Extension
+                            )
+                        }
+                    }
+
+                    [void]$ftsCommand.ExecuteNonQuery()
+                    [void]$metadataCommand.ExecuteNonQuery()
+                }
+                finally {
+                    if ($null -ne $metadataCommand) {
+                        $metadataCommand.Dispose()
+                    }
+                    if ($null -ne $ftsCommand) {
+                        $ftsCommand.Dispose()
+                    }
+                }
             }
 
             $transaction.Commit()
@@ -538,44 +608,7 @@ CREATE VIRTUAL TABLE files_fts_v2 USING fts5(
                 $createCommand.Dispose()
             }
 
-            $legacyFiles = [System.Collections.Generic.List[object]]::new()
-            $selectCommand = $this.NewCommand(
-                "SELECT id, path, size_bytes, creation_time_utc_ticks, " +
-                "last_write_time_utc_ticks, indexed_at_utc_ticks, has_content, is_cloud_only " +
-                "FROM files_metadata;",
-                $transaction
-            )
-            try {
-                $reader = $selectCommand.ExecuteReader()
-                try {
-                    while ($reader.Read()) {
-                        $legacyFiles.Add([PSCustomObject]@{
-                            Id = [long]$reader["id"]
-                            Path = [string]$reader["path"]
-                            Size = [long]$reader["size_bytes"]
-                            CreationTicks = [long]$reader["creation_time_utc_ticks"]
-                            WriteTicks = [long]$reader["last_write_time_utc_ticks"]
-                            IndexedTicks = [long]$reader["indexed_at_utc_ticks"]
-                            HasContent = [bool]$reader["has_content"]
-                            IsCloudOnly = [bool]$reader["is_cloud_only"]
-                        })
-                    }
-                }
-                finally {
-                    $reader.Dispose()
-                }
-            }
-            finally {
-                $selectCommand.Dispose()
-            }
-
-            foreach ($legacyFile in $legacyFiles) {
-                $path = [PathUtil]::Normalize($legacyFile.Path)
-                $directory = [System.IO.Path]::GetDirectoryName($path)
-                $fullName = [System.IO.Path]::GetFileName($path)
-                $extension = [System.IO.Path]::GetExtension($fullName)
-                $name = [System.IO.Path]::GetFileNameWithoutExtension($fullName)
-                $insertCommand = $this.NewCommand(@"
+            $insertCommand = $this.NewCommand(@"
 INSERT INTO files_metadata_v2 (
     id, directory_path, filename, extension, size_bytes,
     creation_time_utc_ticks, last_write_time_utc_ticks, indexed_at_utc_ticks,
@@ -586,22 +619,88 @@ INSERT INTO files_metadata_v2 (
     `$indexedAtParameter, `$hasContentParameter, `$cloudOnlyParameter
 );
 "@, $transaction)
-                [void]$insertCommand.Parameters.AddWithValue('$idParameter', $legacyFile.Id)
-                [void]$insertCommand.Parameters.AddWithValue('$directoryParameter', $directory)
-                [void]$insertCommand.Parameters.AddWithValue('$filenameParameter', $name)
-                [void]$insertCommand.Parameters.AddWithValue('$extensionParameter', $extension)
-                [void]$insertCommand.Parameters.AddWithValue('$sizeParameter', $legacyFile.Size)
-                [void]$insertCommand.Parameters.AddWithValue('$creationTimeParameter', $legacyFile.CreationTicks)
-                [void]$insertCommand.Parameters.AddWithValue('$lastWriteTimeParameter', $legacyFile.WriteTicks)
-                [void]$insertCommand.Parameters.AddWithValue('$indexedAtParameter', $legacyFile.IndexedTicks)
-                [void]$insertCommand.Parameters.AddWithValue('$hasContentParameter', $legacyFile.HasContent)
-                [void]$insertCommand.Parameters.AddWithValue('$cloudOnlyParameter', $legacyFile.IsCloudOnly)
-                try {
-                    [void]$insertCommand.ExecuteNonQuery()
-                }
-                finally {
-                    $insertCommand.Dispose()
-                }
+            try {
+                [void]$insertCommand.Parameters.AddWithValue('$idParameter', 0)
+                [void]$insertCommand.Parameters.AddWithValue('$directoryParameter', "")
+                [void]$insertCommand.Parameters.AddWithValue('$filenameParameter', "")
+                [void]$insertCommand.Parameters.AddWithValue('$extensionParameter', "")
+                [void]$insertCommand.Parameters.AddWithValue('$sizeParameter', 0)
+                [void]$insertCommand.Parameters.AddWithValue('$creationTimeParameter', 0)
+                [void]$insertCommand.Parameters.AddWithValue('$lastWriteTimeParameter', 0)
+                [void]$insertCommand.Parameters.AddWithValue('$indexedAtParameter', 0)
+                [void]$insertCommand.Parameters.AddWithValue('$hasContentParameter', $false)
+                [void]$insertCommand.Parameters.AddWithValue('$cloudOnlyParameter', $false)
+                $insertCommand.Prepare()
+
+                $hasLastId = $false
+                $lastId = [long]0
+                do {
+                    $selectSql = (
+                        "SELECT id, path, size_bytes, creation_time_utc_ticks, " +
+                        "last_write_time_utc_ticks, indexed_at_utc_ticks, has_content, is_cloud_only " +
+                        "FROM files_metadata "
+                    )
+                    if ($hasLastId) {
+                        $selectSql += "WHERE id > `$lastIdParameter "
+                    }
+                    $selectSql += "ORDER BY id LIMIT 300;"
+
+                    $selectCommand = $this.NewCommand($selectSql, $transaction)
+                    $legacyFiles = [System.Collections.Generic.List[object]]::new()
+                    try {
+                        if ($hasLastId) {
+                            [void]$selectCommand.Parameters.AddWithValue(
+                                '$lastIdParameter',
+                                $lastId
+                            )
+                        }
+                        $reader = $selectCommand.ExecuteReader()
+                        try {
+                            while ($reader.Read()) {
+                                $legacyFiles.Add([PSCustomObject]@{
+                                    Id = [long]$reader["id"]
+                                    Path = [string]$reader["path"]
+                                    Size = [long]$reader["size_bytes"]
+                                    CreationTicks = [long]$reader["creation_time_utc_ticks"]
+                                    WriteTicks = [long]$reader["last_write_time_utc_ticks"]
+                                    IndexedTicks = [long]$reader["indexed_at_utc_ticks"]
+                                    HasContent = [bool]$reader["has_content"]
+                                    IsCloudOnly = [bool]$reader["is_cloud_only"]
+                                })
+                            }
+                        }
+                        finally {
+                            $reader.Dispose()
+                        }
+                    }
+                    finally {
+                        $selectCommand.Dispose()
+                    }
+
+                    foreach ($legacyFile in $legacyFiles) {
+                        $path = [PathUtil]::Normalize($legacyFile.Path)
+                        $directory = [System.IO.Path]::GetDirectoryName($path)
+                        $fullName = [System.IO.Path]::GetFileName($path)
+                        $extension = [System.IO.Path]::GetExtension($fullName)
+                        $name = [System.IO.Path]::GetFileNameWithoutExtension($fullName)
+                        $insertCommand.Parameters['$idParameter'].Value = $legacyFile.Id
+                        $insertCommand.Parameters['$directoryParameter'].Value = $directory
+                        $insertCommand.Parameters['$filenameParameter'].Value = $name
+                        $insertCommand.Parameters['$extensionParameter'].Value = $extension
+                        $insertCommand.Parameters['$sizeParameter'].Value = $legacyFile.Size
+                        $insertCommand.Parameters['$creationTimeParameter'].Value = $legacyFile.CreationTicks
+                        $insertCommand.Parameters['$lastWriteTimeParameter'].Value = $legacyFile.WriteTicks
+                        $insertCommand.Parameters['$indexedAtParameter'].Value = $legacyFile.IndexedTicks
+                        $insertCommand.Parameters['$hasContentParameter'].Value = $legacyFile.HasContent
+                        $insertCommand.Parameters['$cloudOnlyParameter'].Value = $legacyFile.IsCloudOnly
+                        [void]$insertCommand.ExecuteNonQuery()
+                        $lastId = $legacyFile.Id
+                        $hasLastId = $true
+                    }
+                } while ($legacyFiles.Count -gt 0)
+            }
+            finally {
+                $insertCommand.Dispose()
             }
 
             $copyFtsCommand = $this.NewCommand(@"

@@ -72,6 +72,10 @@ Die Architektur hat sich in aufeinander aufbauenden Schritten entwickelt:
 6. **Datenbankzugriffe bündeln und optimieren:** `GetMany()` lädt mehrere
    Metadatensätze pro Abfrage, `GetPathsUnder()` nutzt einen Verzeichnisindex,
    und `SaveBatch()` verwendet vorbereitete SQL-Befehle wieder.
+7. **Löschungen und Migration bündeln:** `RemoveBatch()` löscht mehrere
+   Metadatensätze und FTS-Einträge in einer Transaktion. Die Migration des
+   alten Schemas liest Datensätze blockweise und verwendet ein vorbereitetes
+   Insert-Kommando wieder.
 
 Die Optimierungen dieses letzten Schritts bleiben auf der
 Repository-/Datenbankseite. Der Crawler selbst ist nicht Teil dieser Änderung.
@@ -229,6 +233,12 @@ und Suchtext. Die Abfrage selbst bleibt dadurch von den Datenwerten getrennt.
 - Beim Schreiben bereitet `SaveBatch()` die Metadaten-, FTS-Lösch- und
   FTS-Einfüge-Befehle einmal pro Transaktion vor und verwendet dieselben
   Befehle mit aktualisierten Parametern für jede Datei wieder.
+- `RemoveBatch(paths)` entfernt Metadaten und FTS-Einträge in einer
+  gemeinsamen Transaktion. Die Pfade werden validiert und normalisiert; doppelte
+  Pfade werden übersprungen. SQL-Parameter werden in Gruppen von höchstens 300
+  Pfaden gebunden.
+- `Remove(path)` delegiert an `RemoveBatch()` und behält damit dasselbe
+  transaktionale Verhalten für Einzellöschungen.
 - Der Crawler schreibt standardmäßig in Batches von 200 Dateien
   (`SaveBatchSize`). Ein fehlgeschlagener Batch wird als Repository-Fehler
   gemeldet.
@@ -251,6 +261,35 @@ bereits in `Sync-Files` eingebunden. Der Crawler ruft derzeit jedoch für jede
 Datei einzeln `Get(path)` auf. Er wurde hier bewusst nicht geändert; der
 laufende Crawler-Scan erhält den Vorteil der gebündelten Leseabfrage daher erst,
 wenn seine Seite des Repository-Vertrags später `GetMany()` aufruft.
+
+### Entwicklungsschritt: gebündelte Löschungen und Migration
+
+Die folgenden Schritte erweitern die Optimierungen auf der Persistence-Seite,
+ohne den Crawler oder die GUI zu ändern:
+
+1. `RemoveBatch(paths)` validiert und normalisiert alle Pfade vor dem
+   Schreibvorgang. Doppelte Pfade werden anhand der plattformspezifischen
+   Pfadvergleichsregeln nur einmal verarbeitet.
+2. Die Pfade werden in Gruppen von höchstens 300 verarbeitet. Je Gruppe löscht
+   eine SQL-Abfrage die passenden FTS-Einträge und eine weitere die
+   Metadatensätze. Die Gruppierung hält die Parameterzahl unter dem klassischen
+   SQLite-Limit von 999 Variablen.
+3. Alle Gruppen eines `RemoveBatch()`-Aufrufs laufen in einer gemeinsamen
+   SQLite-Transaktion. Bei einem Fehler wird der gesamte Aufruf zurückgerollt;
+   dadurch bleiben FTS-Index und Metadaten synchron.
+4. `Remove(path)` verwendet denselben Codepfad mit genau einem Pfad. Die
+   Standardimplementierung des Repository-Vertrags bleibt kompatibel und
+   entfernt Pfade einzeln; SQLite überschreibt `RemoveBatch()` für die
+   gebündelte Variante.
+5. Bei der Migration des alten Schemas werden höchstens 300 Metadatensätze
+   gleichzeitig im Arbeitsspeicher gehalten. Ein vorbereitetes Insert-Kommando
+   wird für alle migrierten Datensätze wiederverwendet. Die bestehende
+   Migrationstransaktion und ihr Rollback-Verhalten bleiben erhalten.
+6. Damit ein Scan von den gebündelten Löschungen profitiert, muss der Crawler
+   künftig seine einzelnen `Remove()`-Aufrufe an geeigneten Stellen durch
+   Aufrufe von `RemoveBatch()` ersetzen. Diese Integration liegt außerhalb
+   dieses Entwicklungsschritts; entsprechend bleiben auch die
+   Einzel-Lookups `Repository.Get(path)` im Crawler bestehen.
 
 ### Batchgröße messen
 
@@ -397,7 +436,8 @@ Metadaten und FTS-Inhalte bleiben erhalten.
 | `Save(file)` | Delegiert an `SaveBatch()` mit genau einem Eintrag. | Einzelschreiben erhalten dieselben Validierungs- und Transaktionseigenschaften. |
 | `SaveBatch(files)` | Validiert Pfade vorab, beginnt Transaktion und verwendet vorbereitete Metadaten- und FTS-Befehle für alle Einträge erneut. | Alles oder nichts für den Batch. Leere Batches sind No-op. |
 | `SaveWithinTransaction(file)` | Upsert der Metadaten, Löschen des alten FTS-Satzes, optionales Einfügen des neuen Texts über die vorbereiteten Befehle. | Der Inhalt wird nur bei `HasContent = true` in FTS geschrieben. |
-| `Remove(path)` | Löscht per Transaktion aus `files_fts` und `files_metadata`. | Verhindert verwaiste Treffer oder Metadatensätze, solange der Vorgang erfolgreich ist. |
+| `Remove(path)` | Delegiert an `RemoveBatch()` mit genau einem Pfad. | Verhindert verwaiste Treffer oder Metadatensätze, solange der Vorgang erfolgreich ist. |
+| `RemoveBatch(paths)` | Löscht je höchstens 300 Pfade pro SQL-Gruppe aus FTS und Metadaten; alle Gruppen teilen sich eine Transaktion. | Validiert vorab, ignoriert doppelte normalisierte Pfade und rollt bei Fehlern den gesamten Aufruf zurück. |
 | `GetPathsUnder(folder)` | Indizierte Suche nach identischem Verzeichnis oder passendem Verzeichnispräfix; Kandidaten werden mit `PathUtil` exakt geprüft. | Gibt die Kandidaten für die Lösch-Erkennung zurück, ohne alle Metadaten zu lesen. |
 | `Search(query, limit, extension)` | FTS5-`MATCH`, Join auf Metadaten, optionaler Endungsfilter, Rang, Snippet und Limit. | Gibt Objekte mit `File`, `Snippet`, `Score` zurück. |
 | `Dispose()` | Schließt die SQLite-Verbindung einmalig. | Nach `Dispose()` weisen Repository-Methoden mit `EnsureOpen()` auf die ungültige Verwendung hin. |
