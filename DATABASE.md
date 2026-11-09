@@ -20,7 +20,7 @@ flowchart LR
     TX --> M
     TX --> F["files_fts"]
     Q["Search-Query"] --> F
-    F -->|path_key| J["JOIN files_metadata"]
+    F -->|file_id| J["JOIN files_metadata"]
     M --> J
     J --> RESULT["File-Metadaten + Snippet + Score"]
 ```
@@ -53,6 +53,33 @@ Initialisierung legt das übergeordnete Verzeichnis und bei Bedarf Datenbank
 und Tabellen an. Für den grundlegenden Aufbau ist keine separate
 Serverinstallation nötig.
 
+## Entwicklungsschritte des Programms
+
+Die Architektur hat sich in aufeinander aufbauenden Schritten entwickelt:
+
+1. **Dateien erfassen:** Der Crawler durchläuft Verzeichnisse und bildet
+   Dateimetadaten als `Datei`-Objekte ab.
+2. **Inhalte extrahieren:** Der DocScanner wählt passende Reader aus und
+   liefert Klartext für unterstützte Formate.
+3. **Speicherung entkoppeln:** `DateiRepository` trennt den Scanablauf vom
+   Speicher. Damit kann der Crawler mit einem In-Memory- oder einem
+   persistenten Repository arbeiten.
+4. **Persistenz und Volltextsuche:** `SqliteDateiRepository` speichert
+   Metadaten in `files_metadata` und extrahierten Text im separaten FTS5-Index.
+5. **Redundanz abbauen:** Das Datenbankschema speichert Verzeichnis, Dateiname
+   und Endung getrennt; die Migration übernimmt bestehende Datenbanken und
+   verknüpft FTS-Einträge über interne IDs.
+6. **Datenbankzugriffe bündeln und optimieren:** `GetMany()` lädt mehrere
+   Metadatensätze pro Abfrage, `GetPathsUnder()` nutzt einen Verzeichnisindex,
+   und `SaveBatch()` verwendet vorbereitete SQL-Befehle wieder.
+7. **Löschungen und Migration bündeln:** `RemoveBatch()` löscht mehrere
+   Metadatensätze und FTS-Einträge in einer Transaktion. Die Migration des
+   alten Schemas liest Datensätze blockweise und verwendet ein vorbereitetes
+   Insert-Kommando wieder.
+
+Die Optimierungen dieses letzten Schritts bleiben auf der
+Repository-/Datenbankseite. Der Crawler selbst ist nicht Teil dieser Änderung.
+
 ## Voraussetzungen und Installation
 
 - PowerShell 7.2 oder neuer
@@ -72,42 +99,19 @@ SHM-Dateien sind in [`.gitignore`](./.gitignore) ausgeschlossen. Die Datenbank
 enthält sowohl Dateipfade als auch extrahierte Inhalte; sie sollte deshalb wie
 ein lokaler Suchindex mit möglicherweise vertraulichen Daten behandelt werden.
 
-## SQLite mit dem Crawler verwenden
+## Scan und Suche starten
 
-Der folgende Code ist für ein eigenes PowerShell-Skript im Projektverzeichnis
-gedacht:
+Der reguläre Einstiegspunkt scannt in SQLite und kann danach direkt suchen:
 
 ```powershell
-using module "./src/Crawler/Crawler.psm1"
-using module "./src/Persistence/SqliteDateiRepository.psm1"
-
-$database = Initialize-Database -DatabasePath "./data/index.sqlite3"
-
-try {
-    $crawler = [Crawler]::new()
-    $crawler.Repository = $database
-    $crawler.ProgressOutput = $true
-    $crawler.ScanFolder("$HOME/Documents")
-
-    $crawler.GetSummary() | Format-List
-
-    $results = Search-Query -Database $database -Query "Vorlesung"
-    $results | ForEach-Object {
-        [PSCustomObject]@{
-            Pfad    = $_.File.Path
-            Treffer = $_.Snippet
-            Score   = $_.Score
-        }
-    } | Format-Table -Wrap
-}
-finally {
-    $database.Dispose()
-}
+pwsh -File ./suchmaschine.ps1 `
+    -RootPath "$HOME/Documents" `
+    -DatabasePath "./data/index.sqlite3" `
+    -Query "Vorlesung"
 ```
 
-`using module` muss am Anfang des Skripts stehen. Die `finally`-Klausel
-schließt die Verbindung auch dann, wenn Scan oder Suche fehlschlagen. Eine
-geschlossene Repository-Instanz darf nicht weiter verwendet werden.
+Ohne `-Query` wird nur gescannt. Die getrennte Repository-API kann weiterhin
+für eigene Skripte und Programme verwendet werden.
 
 ## Schema und gespeicherte Daten
 
@@ -118,10 +122,9 @@ Enthält genau einen Eintrag je normalisiertem Dateipfad:
 | Spalte | Bedeutung |
 |---|---|
 | `id` | Interner SQLite-Schlüssel. |
-| `path_key` | Eindeutiger Vergleichsschlüssel für den Pfad. |
-| `path` | Normalisierter Dateipfad. |
-| `filename` | Dateiname. |
-| `extension` | Klein geschriebene Dateiendung, inklusive Punkt. |
+| `directory_path` | Normalisierter Pfad zum Ordner, ohne Dateinamen. |
+| `filename` | Dateiname ohne Endung. |
+| `extension` | Dateiendung separat und mit Originalschreibweise, inklusive Punkt. |
 | `size_bytes` | Dateigröße in Bytes. |
 | `creation_time_utc_ticks` | Erstellungszeit als .NET-UTC-Ticks. |
 | `last_write_time_utc_ticks` | Änderungszeit als .NET-UTC-Ticks. |
@@ -129,17 +132,24 @@ Enthält genau einen Eintrag je normalisiertem Dateipfad:
 | `has_content` | Ob ein Reader den Inhalt gelesen hat. `$true` ist auch bei leerem extrahierten Text möglich. |
 | `is_cloud_only` | Ob die Datei als Cloud-Platzhalter übersprungen wurde. |
 
-Auf `extension` liegt ein Index für Filterung nach Dateiendung. `path_key`
-wird aus dem normalisierten Pfad gebildet. Auf Windows und macOS wird er für
-den Vergleich großgeschrieben, da die Standard-Dateisysteme dort nicht
-zwischen Groß- und Kleinschreibung unterscheiden; unter Linux bleibt die
-Schreibweise erhalten. Der sichtbare Pfad in `path` wird dadurch nicht
-verändert.
+Auf `extension` liegt ein case-insensitiver Index für Filterung nach
+Dateiendung. Ein eindeutiger zusammengesetzter Index aus `directory_path`,
+`filename` und `extension` verhindert doppelte Einträge.
+Groß-/Kleinschreibung wird auf Windows und macOS ignoriert und unter Linux
+unterschieden. Der vollständige Pfad wird beim Lesen aus diesen drei Werten
+zusammengesetzt und nicht redundant gespeichert. Das Dateiobjekt normalisiert
+die angezeigte Endung weiterhin zu Kleinbuchstaben.
+
+Der zusammengesetzte Index unterstützt außerdem gezielte Abfragen nach
+mehreren Dateipfaden. Auf Systemen mit case-sensitiven Pfaden gibt es zusätzlich
+einen case-insensitiven Verzeichnisindex, den `GetPathsUnder()` für eine
+kandidatenbasierte Präfixsuche nutzt; die abschließende Pfadprüfung beachtet
+weiterhin die Plattformregeln.
 
 ### `files_fts`
 
-Eine virtuelle FTS5-Tabelle speichert `path_key` und den extrahierten
-`content`. `path_key` ist `UNINDEXED`: Er dient der Verknüpfung, nicht der
+Eine virtuelle FTS5-Tabelle speichert `file_id` und den extrahierten
+`content`. `file_id` ist `UNINDEXED`: Er dient der Verknüpfung, nicht der
 Textsuche. Der Inhalt wird mit SQLite FTS5 und dem Tokenizer
 `unicode61 remove_diacritics 2` indiziert. Dieser Tokenizer normalisiert
 Unicode und entfernt diakritische Zeichen bei der Suche.
@@ -150,10 +160,14 @@ separaten FTS-Index. Wird eine Datei erneut gespeichert, ersetzt das
 Repository ihren FTS-Eintrag, damit kein alter Text als Treffer erhalten
 bleibt. Bei `has_content = false` gibt es keinen FTS-Eintrag mit Inhalt.
 
-Die Tabellen sind nicht mit einem Fremdschlüssel verbunden. Die Zuordnung
-zwischen `files_metadata` und `files_fts` erfolgt in den Repository-Methoden
-über den Wert `path_key`. Deshalb muss `Remove()` beide Tabellen löschen und
-`SaveWithinTransaction()` beide Seiten gemeinsam aktualisieren.
+Die Tabellen sind über den internen Primärschlüssel `files_metadata.id` und
+`files_fts.file_id` verknüpft. Deshalb aktualisieren `Remove()` und
+`SaveWithinTransaction()` beide Seiten gemeinsam innerhalb einer Transaktion.
+Der FTS-Index speichert keinen zweiten Dateipfad oder Dateinamen.
+
+Beim Öffnen wird ein bestehendes Datenbankschema mit vollständigem `path` und
+`path_key` automatisch migriert. Metadaten und bereits indizierte FTS-Inhalte
+bleiben dabei erhalten.
 
 Zeitwerte sind UTC-Ticks aus `.NET DateTime`; sie werden beim Lesen wieder als
 UTC-Datumswerte rekonstruiert. Dadurch bleibt die Genauigkeit des Zeitstempels
@@ -171,9 +185,9 @@ sequenceDiagram
     R->>R: alle Einträge und Pfade vorab validieren
     R->>R: BEGIN TRANSACTION
     loop jede Datei im Batch
-        R->>R: Pfad normalisieren und path_key berechnen
-        R->>M: INSERT oder UPDATE per ON CONFLICT(path_key)
-        R->>F: vorhandenen FTS-Eintrag für path_key löschen
+        R->>R: Pfad in Ordner, Dateiname und Endung zerlegen
+        R->>M: Metadaten anhand der Pfadteile einfügen oder aktualisieren
+        R->>F: vorhandenen FTS-Eintrag anhand der internen ID löschen
         alt HasContent = true
             R->>F: neuen Inhalt einfügen und FTS indizieren
         else HasContent = false
@@ -187,41 +201,27 @@ sequenceDiagram
     end
 ```
 
-Vereinfacht (die ausgelassenen Spaltenwerte werden im Code über Parameter
-gebunden) ist das Metadaten-Schreiben ein Upsert:
+Das Repository zerlegt den normalisierten Pfad und fügt den Metadatensatz ein
+oder aktualisiert ihn anhand des eindeutigen Indexes. Das Upsert liefert die
+interne ID direkt zurück. Anschließend wird der zugehörige FTS-Eintrag
+ersetzt. Beide Schritte sind derselben Transaktion zugeordnet.
 
-```sql
-INSERT INTO files_metadata (...)
-VALUES (...)
-ON CONFLICT(path_key) DO UPDATE SET
-    path = excluded.path,
-    filename = excluded.filename,
-    extension = excluded.extension,
-    size_bytes = excluded.size_bytes,
-    creation_time_utc_ticks = excluded.creation_time_utc_ticks,
-    last_write_time_utc_ticks = excluded.last_write_time_utc_ticks,
-    indexed_at_utc_ticks = excluded.indexed_at_utc_ticks,
-    has_content = excluded.has_content,
-    is_cloud_only = excluded.is_cloud_only;
-```
+Werte werden über benannte Parameter (zum Beispiel
+`$directoryParameter`, `$filenameParameter` und `$contentParameter`) übergeben
+und nicht in den SQL-Text eingesetzt. Das gilt für Pfade, Dateinamen, Inhalte
+und Suchtext. Die Abfrage selbst bleibt dadurch von den Datenwerten getrennt.
 
-`excluded` bezeichnet hier in SQLite den gerade zum Einfügen vorgesehenen
-Datensatz. `path_key` ist eindeutig; existiert er bereits, bleiben die
-Metadaten auf genau einem Datensatz aktualisiert. Anschließend wird der alte
-Volltextsatz entfernt und bei `HasContent = true` neu eingefügt. Beide Schritte
-sind derselben Transaktion zugeordnet wie das Upsert.
-
-Werte werden über benannte Parameter (`$pathParameter`,
-`$contentParameter` usw.) übergeben und nicht in den SQL-Text eingesetzt. Das
-gilt für Pfade, Dateinamen, Inhalte und Suchtext. Die Abfrage selbst bleibt
-dadurch von den Datenwerten getrennt.
-
-## Schreib- und Scanverhalten
+## Lese- und Scanverhalten
 
 - `Save(file)` speichert eine Datei über dieselbe Batch-Logik wie `SaveBatch`.
 - `SaveBatch(files)` schreibt Metadaten und FTS-Einträge innerhalb **einer
   Transaktion**. Bei einem Fehler wird der ganze Batch zurückgerollt.
-- Ein vorhandener `path_key` wird aktualisiert statt dupliziert.
+- `GetMany(paths)` lädt bekannte Metadatensätze mit einer gemeinsamen
+  SQL-Abfrage je höchstens 300 Pfade. Das vermeidet einen Datenbank-Roundtrip
+  pro Datei; fehlende Pfade sind nicht im Ergebnis enthalten.
+- `Sync-Files` verwendet `GetMany()` vor dem Vergleich der Änderungszeiten und
+  speichert danach nur neue oder geänderte Dateien.
+- Ein vorhandener Pfad wird aktualisiert statt dupliziert.
 - Beim Aktualisieren wird zunächst der bisherige FTS-Eintrag entfernt und
   danach - sofern `HasContent` gesetzt ist - der neue Inhalt indiziert.
 - `Remove(path)` entfernt Metadaten und Volltextindex-Eintrag atomar.
@@ -230,6 +230,15 @@ dadurch von den Datenwerten getrennt.
 - Unveränderte Dateien werden vom Crawler nicht erneut gelesen oder gespeichert.
   Entscheidend ist dabei `LastWriteTimeUtc`; Dateigröße und Inhalt werden nicht
   zusätzlich verglichen.
+- Beim Schreiben bereitet `SaveBatch()` die Metadaten-, FTS-Lösch- und
+  FTS-Einfüge-Befehle einmal pro Transaktion vor und verwendet dieselben
+  Befehle mit aktualisierten Parametern für jede Datei wieder.
+- `RemoveBatch(paths)` entfernt Metadaten und FTS-Einträge in einer
+  gemeinsamen Transaktion. Die Pfade werden validiert und normalisiert; doppelte
+  Pfade werden übersprungen. SQL-Parameter werden in Gruppen von höchstens 300
+  Pfaden gebunden.
+- `Remove(path)` delegiert an `RemoveBatch()` und behält damit dasselbe
+  transaktionale Verhalten für Einzellöschungen.
 - Der Crawler schreibt standardmäßig in Batches von 200 Dateien
   (`SaveBatchSize`). Ein fehlgeschlagener Batch wird als Repository-Fehler
   gemeldet.
@@ -239,11 +248,119 @@ weder gefunden noch unter einem nicht lesbaren Ordner liegen, aus der
 Datenbank entfernt. Ein einzelner Dateiaufruf über `ProcessFile()` führt
 keine Lösch-Erkennung durch.
 
-`GetPathsUnder()` liest momentan alle `path`-Werte aus
-`files_metadata` und prüft dann in PowerShell mit `PathUtil.IsSameOrUnder()`,
-welche unter dem Scan-Root liegen. Die aktuelle Implementierung nutzt dafür
-keine SQL-Präfixabfrage, weil ein einfacher Textpräfix Ordner wie
-`/docs-old` irrtümlich mit `/docs` verwechseln könnte.
+`GetPathsUnder()` fragt zuerst nur Datensätze ab, deren Verzeichnis exakt dem
+Scan-Root entspricht oder mit dem Root plus Pfadtrenner beginnt. SQLite nutzt
+dabei einen Verzeichnisindex und escaped `%`, `_` sowie `\` im Rootpfad, damit
+Dateinamen mit diesen Zeichen nicht als SQL-Wildcards interpretiert werden.
+Die Kandidaten werden anschließend weiterhin mit
+`PathUtil.IsSameOrUnder()` geprüft. So bleibt die Prüfung der Ordnergrenze und
+der Plattform-spezifischen Groß-/Kleinschreibung maßgeblich.
+
+Die `GetMany()`-Methode steht im Repository-Vertrag zur Verfügung und ist
+bereits in `Sync-Files` eingebunden. Der Crawler ruft derzeit jedoch für jede
+Datei einzeln `Get(path)` auf. Er wurde hier bewusst nicht geändert; der
+laufende Crawler-Scan erhält den Vorteil der gebündelten Leseabfrage daher erst,
+wenn seine Seite des Repository-Vertrags später `GetMany()` aufruft.
+
+### Entwicklungsschritt: gebündelte Löschungen und Migration
+
+Die folgenden Schritte erweitern die Optimierungen auf der Persistence-Seite,
+ohne den Crawler oder die GUI zu ändern:
+
+1. `RemoveBatch(paths)` validiert und normalisiert alle Pfade vor dem
+   Schreibvorgang. Doppelte Pfade werden anhand der plattformspezifischen
+   Pfadvergleichsregeln nur einmal verarbeitet.
+2. Die Pfade werden in Gruppen von höchstens 300 verarbeitet. Je Gruppe löscht
+   eine SQL-Abfrage die passenden FTS-Einträge und eine weitere die
+   Metadatensätze. Die Gruppierung hält die Parameterzahl unter dem klassischen
+   SQLite-Limit von 999 Variablen.
+3. Alle Gruppen eines `RemoveBatch()`-Aufrufs laufen in einer gemeinsamen
+   SQLite-Transaktion. Bei einem Fehler wird der gesamte Aufruf zurückgerollt;
+   dadurch bleiben FTS-Index und Metadaten synchron.
+4. `Remove(path)` verwendet denselben Codepfad mit genau einem Pfad. Die
+   Standardimplementierung des Repository-Vertrags bleibt kompatibel und
+   entfernt Pfade einzeln; SQLite überschreibt `RemoveBatch()` für die
+   gebündelte Variante.
+5. Bei der Migration des alten Schemas werden höchstens 300 Metadatensätze
+   gleichzeitig im Arbeitsspeicher gehalten. Ein vorbereitetes Insert-Kommando
+   wird für alle migrierten Datensätze wiederverwendet. Die bestehende
+   Migrationstransaktion und ihr Rollback-Verhalten bleiben erhalten.
+6. Damit ein Scan von den gebündelten Löschungen profitiert, muss der Crawler
+   künftig seine einzelnen `Remove()`-Aufrufe an geeigneten Stellen durch
+   Aufrufe von `RemoveBatch()` ersetzen. Diese Integration liegt außerhalb
+   dieses Entwicklungsschritts; entsprechend bleiben auch die
+   Einzel-Lookups `Repository.Get(path)` im Crawler bestehen.
+
+### Batchgröße messen
+
+`SaveBatch()` verarbeitet alle übergebenen Dateien in einer Transaktion und
+verwendet vorbereitete Befehle. Die Batchgröße selbst bestimmt weiterhin der
+aufrufende Scanprozess; der aktuelle Crawler-Standard ist 200 Dateien. Für eine
+fundierte Abstimmung sollten vollständige, repräsentative Scans mit mehreren
+Werten (zum Beispiel 100, 200 und 500 Dateien pro Batch) auf demselben
+Dateibaum und derselben Datenbank gemessen werden. Neben der Gesamtdauer auch
+Anzahl und Dauer fehlgeschlagener Batches sowie den Speicherbedarf vergleichen.
+Den Crawler und seine Batch-Konfiguration habe ich nicht geändert.
+
+### Benchmark für Programmabläufe
+
+Das separate Skript
+[Measure-Performance.ps1](./tests/Measure-Performance.ps1) misst die Laufzeiten
+von Crawler, DocScanner und Datenbank, ohne Dateien im Scan-Root zu verändern.
+Es ist ein Benchmark und kein Pester-Test; `Invoke-Pester` führt es nicht
+automatisch aus.
+
+```powershell
+pwsh -File ./tests/Measure-Performance.ps1 `
+    -RootPath "$HOME/Documents" `
+    -Iterations 100 `
+    -WarmupRuns 3 `
+    -SaveBatchSize 200 `
+    -SearchQuery "Vorlesung" `
+    -CsvPath "$HOME/performance-results.csv"
+```
+
+Jeder Messlauf enthält zwei Scans desselben Bestands:
+
+1. **Indexierung:** Die temporäre Datenbank ist zu Beginn leer; der Crawler
+   verarbeitet alle Dateien und schreibt neue Einträge.
+2. **Unveränderter Rescan:** Direkt danach wird derselbe Bestand erneut
+   gescannt. Die Dateien sollten als unverändert erkannt werden und weder
+   Inhaltsextraktion noch Schreiben auslösen.
+
+Die Datenbank wird zwischen den Messläufen mit `RemoveBatch()` geleert. Drei
+Warm-up-Läufe sind standardmäßig von den Statistiken ausgeschlossen. Der
+Standardwert `Iterations = 100` bedeutet 100 gemessene Indexierungen und 100
+gemessene unveränderte Scans. Zusätzlich misst jeder Lauf separat `GetMany()`,
+Volltextsuche und `RemoveBatch()` auf dem gerade indizierten Bestand. Die
+Laufzeit dieser separaten Datenbankmessungen zählt nicht zur Crawler-Laufzeit.
+
+Die Konsolenausgabe zeigt je Szenario Mittelwert, Median, P95,
+Standardabweichung, Minimum und Maximum. Für Crawler-Phasen wird zusätzlich
+der prozentuale Anteil an der durchschnittlichen Gesamtlaufzeit angezeigt.
+Die CSV enthält eine Zeile pro Messpunkt und Iteration und eignet sich für
+weitere statistische Auswertung; Laufzeiten verwenden unabhängig von der
+System-Locale einen Dezimalpunkt.
+Unter anderem werden diese Phasen getrennt ausgegeben:
+
+- Gesamtlaufzeit des Crawlers
+- Repository-Lookups (`Get`) und `GetPathsUnder()` innerhalb des Scans
+- Schreiben über `SaveBatch()` sowie die im Scan ausgelösten Einzellöschungen
+- Zeit in `DocScanner.ReadContent()`
+- übrige Crawler-Zeit, darunter Dateisystem-Auflistung, Metadatenbildung und
+  Steuerlogik
+- separate Messungen für DB-`GetMany()`, Volltextsuche und `RemoveBatch()`
+
+Die CSV wird standardmäßig im temporären Verzeichnis angelegt; `-CsvPath` legt
+den gewünschten dauerhaften Speicherort fest. Das Skript verwendet eine
+isolierte temporäre SQLite-Datenbank und entfernt sie nach Abschluss. Der
+Scan-Root wird nur gelesen. Die Messwerte hängen dennoch von Dateisystem- und
+SQLite-Caches, Datenträger, Dateitypen und externen Reader-Tools ab. Ein
+„kalter“ Index bedeutet hier eine leere Datenbank; der Betriebssystem-Cache
+wird nicht geleert. `-SearchQuery` sollte für eine repräsentative Suchmessung
+einen im Bestand häufig vorkommenden Suchbegriff enthalten. Für Vergleiche
+deshalb denselben Bestand, dieselbe
+PowerShell-/SQLite-Version und dieselben Parameter verwenden.
 
 ## Volltextsuche
 
@@ -275,7 +392,7 @@ flowchart TD
     D -- Nein --> E["Ausnahme"]
     D -- Ja --> F["Extension normalisieren<br/>optional"]
     F --> G["files_fts MATCH Query"]
-    G --> H["JOIN auf files_metadata<br/>über path_key"]
+    G --> H["JOIN auf files_metadata<br/>über file_id"]
     H --> I["Extension-Filter anwenden"]
     I --> J["BM25-Rang berechnen<br/>Snippet erzeugen"]
     J --> K["nach Rang ordnen<br/>und Limit anwenden"]
@@ -290,7 +407,7 @@ Ausnahme auslösen und wird nicht in „keine Treffer“ umgewandelt. Die
 SQL-Abfrage verwendet `bm25(files_fts)` für die
 Relevanz und `snippet(files_fts, 1, '[', ']', '...', 16)` für einen kurzen
 Trefferkontext. Die Spaltennummer `1` ist nullbasiert und bezeichnet in
-`files_fts(path_key, content)` die Spalte `content`; der Pfad ist Spalte `0`.
+`files_fts(file_id, content)` die Spalte `content`; die ID ist Spalte `0`.
 SQLite ordnet `rank` aufsteigend, weil bei BM25 kleinere Werte relevanter
 sind. Die PowerShell-Schicht gibt `-rank` zurück, so dass dort ein größerer
 `Score` für einen besseren Treffer steht.
@@ -335,6 +452,7 @@ Invoke-Pester ./tests/SqliteDateiRepository.Tests.ps1
 
 Die Tests legen temporäre Datenbanken an und prüfen unter anderem Transaktionen
 und Rollbacks, Suche und Snippets, Endungsfilter, Synchronisierung,
+gebündelte Lookups über Batchgrenzen, Ordnerpfade mit SQL-Wildcards,
 Persistenz nach erneutem Öffnen und Verhalten nach `Dispose()`.
 
 ## Initialisierung und Verbindung Schritt für Schritt
@@ -351,7 +469,7 @@ flowchart TD
     G --> H["ConnectionStringBuilder<br/>ReadWriteCreate"]
     H --> I["Verbindung öffnen"]
     I --> J["PRAGMA-Einstellungen setzen"]
-    J --> K["Tabellen und Extension-Index<br/>IF NOT EXISTS anlegen"]
+    J --> K["Schema prüfen oder migrieren,<br/>Tabellen und Indizes sicherstellen"]
     K --> L["SqliteDateiRepository zurückgeben"]
 ```
 
@@ -365,20 +483,22 @@ Repository-Instanz zurückzugeben.
 
 Der Konstruktor erstellt mit `ReadWriteCreate` eine neue Datenbankdatei, wenn
 sie noch nicht existiert. Nach dem Öffnen ruft er `InitializeSchema()` auf.
-`CREATE TABLE/INDEX/VIRTUAL TABLE IF NOT EXISTS` macht diesen Schritt
-wiederholbar: bei jedem Öffnen wird sichergestellt, dass die Objekte vorhanden
-sind, aber vorhandene Tabellen werden nicht geleert.
+Die Schema-Initialisierung ist wiederholbar. Alte Datenbanken mit
+`path_key`-Schema werden innerhalb einer Transaktion umgebaut; bestehende
+Metadaten und FTS-Inhalte bleiben erhalten.
 
 ## Repository-Methoden und ihre Datenbankwirkung
 
 | Methode | Datenbankarbeit | Ergebnis / wichtige Eigenschaft |
 |---|---|---|
-| `Get(path)` | `SELECT` aus `files_metadata` anhand des normalisierten `path_key`. | Gibt `null` zurück, wenn der Pfad unbekannt ist. Gibt keinen Inhalt zurück und liest nicht aus FTS. |
+| `Get(path)` | `SELECT` aus `files_metadata` anhand der normalisierten Pfadteile. | Gibt `null` zurück, wenn der Pfad unbekannt ist. Gibt keinen Inhalt zurück und liest nicht aus FTS. |
+| `GetMany(paths)` | Je höchstens 300 Pfade eine `VALUES`-CTE mit Join auf den zusammengesetzten Pfadindex. | Gibt ein Dictionary vorhandener Dateien zurück; fehlende Pfade fehlen. |
 | `Save(file)` | Delegiert an `SaveBatch()` mit genau einem Eintrag. | Einzelschreiben erhalten dieselben Validierungs- und Transaktionseigenschaften. |
-| `SaveBatch(files)` | Validiert Pfade vorab, beginnt Transaktion und ruft je Element `SaveWithinTransaction()` auf. | Alles oder nichts für den Batch. Leere Batches sind No-op. |
-| `SaveWithinTransaction(file)` | Upsert der Metadaten, Löschen des alten FTS-Satzes, optionales Einfügen des neuen Texts. | Der Inhalt wird nur bei `HasContent = true` in FTS geschrieben. |
-| `Remove(path)` | Löscht per Transaktion aus `files_fts` und `files_metadata`. | Verhindert verwaiste Treffer oder Metadatensätze, solange der Vorgang erfolgreich ist. |
-| `GetPathsUnder(folder)` | Liest gespeicherte Pfade und filtert sie mit `PathUtil`. | Gibt die Kandidaten für die Lösch-Erkennung zurück. |
+| `SaveBatch(files)` | Validiert Pfade vorab, beginnt Transaktion und verwendet vorbereitete Metadaten- und FTS-Befehle für alle Einträge erneut. | Alles oder nichts für den Batch. Leere Batches sind No-op. |
+| `SaveWithinTransaction(file)` | Upsert der Metadaten, Löschen des alten FTS-Satzes, optionales Einfügen des neuen Texts über die vorbereiteten Befehle. | Der Inhalt wird nur bei `HasContent = true` in FTS geschrieben. |
+| `Remove(path)` | Delegiert an `RemoveBatch()` mit genau einem Pfad. | Verhindert verwaiste Treffer oder Metadatensätze, solange der Vorgang erfolgreich ist. |
+| `RemoveBatch(paths)` | Löscht je höchstens 300 Pfade pro SQL-Gruppe aus FTS und Metadaten; alle Gruppen teilen sich eine Transaktion. | Validiert vorab, ignoriert doppelte normalisierte Pfade und rollt bei Fehlern den gesamten Aufruf zurück. |
+| `GetPathsUnder(folder)` | Indizierte Suche nach identischem Verzeichnis oder passendem Verzeichnispräfix; Kandidaten werden mit `PathUtil` exakt geprüft. | Gibt die Kandidaten für die Lösch-Erkennung zurück, ohne alle Metadaten zu lesen. |
 | `Search(query, limit, extension)` | FTS5-`MATCH`, Join auf Metadaten, optionaler Endungsfilter, Rang, Snippet und Limit. | Gibt Objekte mit `File`, `Snippet`, `Score` zurück. |
 | `Dispose()` | Schließt die SQLite-Verbindung einmalig. | Nach `Dispose()` weisen Repository-Methoden mit `EnsureOpen()` auf die ungültige Verwendung hin. |
 

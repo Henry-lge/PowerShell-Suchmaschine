@@ -77,6 +77,17 @@ Describe "SqliteDateiRepository" {
         $stored.HasContent | Should -BeTrue
     }
 
+    It "reconstructs the original path casing while exposing a normalized extension" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot "Notes.TXT")
+
+        $script:database.Save($file)
+        $stored = $script:database.Get($file.Path)
+
+        $stored.Path | Should -Be $file.Path
+        $stored.Name | Should -Be "Notes.TXT"
+        $stored.Extension | Should -Be ".txt"
+    }
+
     It "updates an existing path instead of creating a duplicate" {
         $file = New-TestDatei -Path (Join-Path $script:testRoot "notes.txt")
         $script:database.Save($file)
@@ -160,6 +171,40 @@ Describe "SqliteDateiRepository" {
         $paths[0] | Should -Be $nested.Path
     }
 
+    It "filters wildcard characters literally when finding paths under a folder" {
+        $wildcardFolder = New-TestDatei -Path (
+            Join-Path $script:testRoot "wild%_scope/inside.txt"
+        )
+        $notUnderFolder = New-TestDatei -Path (
+            Join-Path $script:testRoot "wildXXscope/outside.txt"
+        )
+        $script:database.SaveBatch([Datei[]]@($wildcardFolder, $notUnderFolder))
+
+        $paths = $script:database.GetPathsUnder(
+            (Join-Path $script:testRoot "wild%_scope")
+        )
+
+        $paths | Should -HaveCount 1
+        $paths[0] | Should -Be $wildcardFolder.Path
+    }
+
+    It "retrieves many paths in bounded SQLite batches" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot "bulk-existing.txt")
+        $script:database.Save($file)
+        $paths = [System.Collections.Generic.List[string]]::new()
+        $paths.Add($file.Path)
+        for ($index = 0; $index -lt 605; $index++) {
+            $paths.Add((Join-Path $script:testRoot "missing-$index.txt"))
+        }
+
+        $stored = $script:database.GetMany($paths.ToArray())
+
+        $stored.Count | Should -Be 1
+        $stored[$file.Path].Name | Should -Be "bulk-existing.txt"
+        { $script:database.GetMany([string[]]@($file.Path, "")) } |
+            Should -Throw
+    }
+
     It "uses a transaction to persist a batch and rejects invalid records" {
         $file = New-TestDatei -Path (Join-Path $script:testRoot "valid.txt")
         $invalid = [Datei]::new()
@@ -179,7 +224,7 @@ Describe "SqliteDateiRepository" {
         $command.CommandText = @"
 CREATE TRIGGER reject_test_file
 BEFORE INSERT ON files_metadata
-WHEN NEW.filename = 'reject.txt'
+WHEN NEW.filename = 'reject'
 BEGIN
     SELECT RAISE(ABORT, 'rejected by transaction test');
 END;
@@ -225,6 +270,85 @@ END;
 
         $results | Should -HaveCount 1
         $results[0].File.Path | Should -Be $file.Path
+    }
+
+    It "migrates the legacy full-path schema without losing searchable content" {
+        $path = Join-Path $script:testRoot "legacy.txt"
+        $connectionProperty = [SqliteDateiRepository].GetProperty(
+            "_connection",
+            [System.Reflection.BindingFlags]"Instance,Public,NonPublic"
+        )
+        $connection = $connectionProperty.GetValue($script:database)
+        $command = $connection.CreateCommand()
+        $command.CommandText = @"
+DROP TABLE files_fts;
+DROP TABLE files_metadata;
+CREATE TABLE files_metadata (
+    id INTEGER PRIMARY KEY,
+    path_key TEXT NOT NULL UNIQUE,
+    path TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    extension TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    creation_time_utc_ticks INTEGER NOT NULL,
+    last_write_time_utc_ticks INTEGER NOT NULL,
+    indexed_at_utc_ticks INTEGER NOT NULL,
+    has_content INTEGER NOT NULL,
+    is_cloud_only INTEGER NOT NULL
+);
+CREATE VIRTUAL TABLE files_fts USING fts5(
+    path_key UNINDEXED,
+    content,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+"@
+        [void]$command.ExecuteNonQuery()
+        $command.Dispose()
+
+        $legacy = New-TestDatei -Path $path
+        $legacy.Content = "legacysearchmarker"
+        $legacyCommand = $connection.CreateCommand()
+        $legacyCommand.CommandText = @"
+INSERT INTO files_metadata (
+    id, path_key, path, filename, extension, size_bytes, creation_time_utc_ticks,
+    last_write_time_utc_ticks, indexed_at_utc_ticks, has_content, is_cloud_only
+) VALUES (
+    23, 'LEGACYKEY', `$path, 'legacy.txt', '.txt', 128, `$creationTicks,
+    `$writeTicks, `$indexedTicks, 1, 0
+);
+INSERT INTO files_fts(path_key, content) VALUES ('LEGACYKEY', 'legacysearchmarker');
+"@
+        [void]$legacyCommand.Parameters.AddWithValue('$path', $path)
+        [void]$legacyCommand.Parameters.AddWithValue('$creationTicks', $legacy.CreationTimeUtc.Ticks)
+        [void]$legacyCommand.Parameters.AddWithValue('$writeTicks', $legacy.LastWriteTimeUtc.Ticks)
+        [void]$legacyCommand.Parameters.AddWithValue('$indexedTicks', $legacy.IndexedAtUtc.Ticks)
+        [void]$legacyCommand.ExecuteNonQuery()
+        $legacyCommand.Dispose()
+
+        $script:database.Dispose()
+        $script:database = Initialize-Database `
+            -DatabasePath $script:databasePath `
+            -AssemblyPath $script:assemblyPath
+
+        $stored = $script:database.Get($path)
+        $stored.Path | Should -Be $path
+        $stored.Name | Should -Be "legacy.txt"
+        $stored.Extension | Should -Be ".txt"
+        (Search-Query -Database $script:database -Query "legacysearchmarker").File.Path |
+            Should -Be $path
+
+        $schemaCommand = $connectionProperty.GetValue($script:database).CreateCommand()
+        $schemaCommand.CommandText = "PRAGMA table_info(files_metadata);"
+        $schemaReader = $schemaCommand.ExecuteReader()
+        $columnNames = [System.Collections.Generic.List[string]]::new()
+        while ($schemaReader.Read()) {
+            $columnNames.Add([string]$schemaReader["name"])
+        }
+        $schemaReader.Dispose()
+        $schemaCommand.Dispose()
+        $columnNames | Should -Contain "directory_path"
+        $columnNames | Should -Not -Contain "path"
+        $columnNames | Should -Not -Contain "path_key"
     }
 
     It "validates the search limit" {
