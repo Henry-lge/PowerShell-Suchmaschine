@@ -58,6 +58,9 @@ class SqliteDateiRepository : DateiRepository {
             $builderType.GetProperty("Mode").PropertyType,
             "ReadWriteCreate"
         )
+        # Ohne Pooling gibt Dispose() den Datei-Handle sofort frei. Windows
+        # verweigert andernfalls das Loeschen der Datenbank nach dem Dispose.
+        $builder.Pooling = $false
 
         $connectionType = [type]::GetType(
             "Microsoft.Data.Sqlite.SqliteConnection, Microsoft.Data.Sqlite",
