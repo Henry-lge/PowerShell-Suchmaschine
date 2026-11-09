@@ -31,20 +31,23 @@ als Parameter übergeben:
 ```powershell
 pwsh -File ./suchmaschine.ps1 `
     -RootPath "$HOME/Documents" `
-    -ExcludePath @("$HOME/Documents/Private", "$HOME/Documents/Backup")
+    -ExcludePath @("$HOME/Documents/Private", "$HOME/Documents/Backup") `
+    -Query "lineare algebra"
 ```
+
+Der Index wird standardmäßig dauerhaft in `data/index.sqlite3` gespeichert.
+Mit `-DatabasePath` lässt sich ein anderer Speicherort angeben. `-Query`
+startet nach dem Scan eine Volltextsuche; ohne diesen Parameter wird nur
+gescannt.
 
 Das Startskript zeigt nach dem Scan eine Zusammenfassung, Fehler nach
 Verarbeitungsphase, die verfügbaren Dateiendungen und die Laufzeit an.
 Ausgeschlossene Ordnernamen sind standardmäßig unter anderem `.git`,
 `node_modules`, `.venv` und `__pycache__`.
 
-> **Wichtig:** Das Startskript verwendet standardmäßig ein
-> `InMemoryDateiRepository`. Der Index bleibt daher nur bis zum Ende der
-> PowerShell-Sitzung erhalten und dieses Skript bietet selbst keine
-> Suchabfrage. Für einen persistenten Index muss der `Crawler` wie in
-> [DATABASE.md](./DATABASE.md) gezeigt an `SqliteDateiRepository` angeschlossen
-> werden.
+Die Suchabfrage verwendet SQLite FTS5-Syntax und findet vollständige Wörter
+oder Phrasen, keine beliebigen Teilzeichenketten. Weitere Beispiele und
+Details stehen in [DATABASE.md](./DATABASE.md).
 
 ## Ablauf eines Scans
 
@@ -101,14 +104,14 @@ werden. Die aktuelle Größenbegrenzung ist über
 
 | Pfad | Aufgabe |
 |---|---|
-| [suchmaschine.ps1](./suchmaschine.ps1) | Einfacher Einstiegspunkt für einen Scan; verwendet standardmäßig den In-Memory-Speicher. |
+| [suchmaschine.ps1](./suchmaschine.ps1) | Einstiegspunkt für Scan und optionale Suche; verwendet standardmäßig den persistenten SQLite-Index. |
 | [src/Crawler/](./src/Crawler/) | Ordnerdurchlauf, Änderungs- und Lösch-Erkennung, Fehler und Scan-Zusammenfassung. |
 | [src/DocScanner/](./src/DocScanner/) | Auswahl des Readers und Extraktion von Dateiinhalten. |
 | [src/DocScanner/Readers/](./src/DocScanner/Readers/) | Format-spezifische Reader und gemeinsame Parser-Hilfen. |
 | [src/Model/](./src/Model/) | Datei- und Scan-Fehlermodelle. |
 | [src/Persistence/](./src/Persistence/) | Repository-Schnittstelle, In-Memory- und SQLite-Implementierung sowie SQLite-Laufzeitinstallation. |
 | [src/Common/](./src/Common/) | Plattformgerechter Pfadvergleich und Erkennung von Cloud-Platzhaltern. |
-| [tests/](./tests/) | Pester-Tests für die SQLite-Implementierung. |
+| [tests/](./tests/) | Pester-Tests und ein separat startbarer Performance-Benchmark. |
 | `lib/sqlite/` | Lokal abgelegte SQLite-.NET- und native Laufzeitdateien; wird bei Bedarf eingerichtet und nicht versioniert. |
 
 Die Architektur trennt Dateisystemdurchlauf, Inhaltsextraktion und Speicherung.
@@ -139,3 +142,17 @@ Invoke-Pester ./tests/SqliteDateiRepository.Tests.ps1
 Die SQLite-Tests decken Schema-Erstellung, Metadaten, Volltextsuche,
 Aktualisierungen, Transaktionen, Synchronisierung, Persistenz und Fehler nach
 dem Schließen des Repositories ab.
+
+Für einen Performance-Benchmark mit 100 Durchläufen, getrennten Messwerten
+für Indexierung, unveränderte Scans und Datenbankoperationen sowie CSV-Rohdaten:
+
+```powershell
+pwsh -File ./tests/Measure-Performance.ps1 `
+    -RootPath "$HOME/Documents" `
+    -CsvPath "$HOME/performance-results.csv"
+```
+
+Das Skript liest den Scan-Root, verwendet eine isolierte temporäre Datenbank
+und führt keine Nutzerdatenänderungen durch. Details zu Szenarien,
+Messpunkten und Grenzen der Auswertung stehen in
+[DATABASE.md](./DATABASE.md#benchmark-fur-programmablaufe).

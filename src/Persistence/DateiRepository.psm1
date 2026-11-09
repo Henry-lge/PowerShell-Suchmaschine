@@ -23,6 +23,29 @@ class DateiRepository {
         throw "Get() must be implemented by a derived class."
     }
 
+    # Gibt vorhandene Dateien anhand ihrer Pfade zurück. Abgeleitete
+    # Repositories können die Abfrage bündeln; die Standardimplementierung
+    # bleibt mit bestehenden Repositorys kompatibel.
+    [System.Collections.Generic.Dictionary[string, Datei]] GetMany([string[]]$paths) {
+        $files = [System.Collections.Generic.Dictionary[string, Datei]]::new(
+            [PathUtil]::GetComparer()
+        )
+
+        foreach ($path in $paths) {
+            if ([string]::IsNullOrWhiteSpace($path)) {
+                throw "Each path must not be empty."
+            }
+
+            $normalizedPath = [PathUtil]::Normalize($path)
+            $file = $this.Get($normalizedPath)
+            if ($null -ne $file) {
+                $files[$normalizedPath] = $file
+            }
+        }
+
+        return $files
+    }
+
     # Fügt die Datei samt Inhalt ein oder ersetzt sie.
     [void] Save([Datei]$datei) {
         throw "Save() must be implemented by a derived class."
@@ -31,6 +54,14 @@ class DateiRepository {
     # Entfernt eine Datei aus dem Index.
     [void] Remove([string]$path) {
         throw "Remove() must be implemented by a derived class."
+    }
+
+    # Entfernt mehrere Dateien. Abgeleitete Repositories können die
+    # Operationen in einer Transaktion bündeln.
+    [void] RemoveBatch([string[]]$paths) {
+        foreach ($path in $paths) {
+            $this.Remove($path)
+        }
     }
 
     # Gibt alle gespeicherten Pfade im Ordner und seinen Unterordnern zurück.
@@ -84,6 +115,12 @@ class InMemoryDateiRepository : DateiRepository {
 
     [void] Remove([string]$path) {
         [void]$this._store.Remove($path)
+    }
+
+    [void] RemoveBatch([string[]]$paths) {
+        foreach ($path in $paths) {
+            [void]$this._store.Remove($path)
+        }
     }
 
     [string[]] GetPathsUnder([string]$folderPath) {
