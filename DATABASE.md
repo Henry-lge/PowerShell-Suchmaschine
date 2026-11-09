@@ -302,6 +302,66 @@ Dateibaum und derselben Datenbank gemessen werden. Neben der Gesamtdauer auch
 Anzahl und Dauer fehlgeschlagener Batches sowie den Speicherbedarf vergleichen.
 Den Crawler und seine Batch-Konfiguration habe ich nicht geändert.
 
+### Benchmark für Programmabläufe
+
+Das separate Skript
+[Measure-Performance.ps1](./tests/Measure-Performance.ps1) misst die Laufzeiten
+von Crawler, DocScanner und Datenbank, ohne Dateien im Scan-Root zu verändern.
+Es ist ein Benchmark und kein Pester-Test; `Invoke-Pester` führt es nicht
+automatisch aus.
+
+```powershell
+pwsh -File ./tests/Measure-Performance.ps1 `
+    -RootPath "$HOME/Documents" `
+    -Iterations 100 `
+    -WarmupRuns 3 `
+    -SaveBatchSize 200 `
+    -SearchQuery "Vorlesung" `
+    -CsvPath "$HOME/performance-results.csv"
+```
+
+Jeder Messlauf enthält zwei Scans desselben Bestands:
+
+1. **Indexierung:** Die temporäre Datenbank ist zu Beginn leer; der Crawler
+   verarbeitet alle Dateien und schreibt neue Einträge.
+2. **Unveränderter Rescan:** Direkt danach wird derselbe Bestand erneut
+   gescannt. Die Dateien sollten als unverändert erkannt werden und weder
+   Inhaltsextraktion noch Schreiben auslösen.
+
+Die Datenbank wird zwischen den Messläufen mit `RemoveBatch()` geleert. Drei
+Warm-up-Läufe sind standardmäßig von den Statistiken ausgeschlossen. Der
+Standardwert `Iterations = 100` bedeutet 100 gemessene Indexierungen und 100
+gemessene unveränderte Scans. Zusätzlich misst jeder Lauf separat `GetMany()`,
+Volltextsuche und `RemoveBatch()` auf dem gerade indizierten Bestand. Die
+Laufzeit dieser separaten Datenbankmessungen zählt nicht zur Crawler-Laufzeit.
+
+Die Konsolenausgabe zeigt je Szenario Mittelwert, Median, P95,
+Standardabweichung, Minimum und Maximum. Für Crawler-Phasen wird zusätzlich
+der prozentuale Anteil an der durchschnittlichen Gesamtlaufzeit angezeigt.
+Die CSV enthält eine Zeile pro Messpunkt und Iteration und eignet sich für
+weitere statistische Auswertung; Laufzeiten verwenden unabhängig von der
+System-Locale einen Dezimalpunkt.
+Unter anderem werden diese Phasen getrennt ausgegeben:
+
+- Gesamtlaufzeit des Crawlers
+- Repository-Lookups (`Get`) und `GetPathsUnder()` innerhalb des Scans
+- Schreiben über `SaveBatch()` sowie die im Scan ausgelösten Einzellöschungen
+- Zeit in `DocScanner.ReadContent()`
+- übrige Crawler-Zeit, darunter Dateisystem-Auflistung, Metadatenbildung und
+  Steuerlogik
+- separate Messungen für DB-`GetMany()`, Volltextsuche und `RemoveBatch()`
+
+Die CSV wird standardmäßig im temporären Verzeichnis angelegt; `-CsvPath` legt
+den gewünschten dauerhaften Speicherort fest. Das Skript verwendet eine
+isolierte temporäre SQLite-Datenbank und entfernt sie nach Abschluss. Der
+Scan-Root wird nur gelesen. Die Messwerte hängen dennoch von Dateisystem- und
+SQLite-Caches, Datenträger, Dateitypen und externen Reader-Tools ab. Ein
+„kalter“ Index bedeutet hier eine leere Datenbank; der Betriebssystem-Cache
+wird nicht geleert. `-SearchQuery` sollte für eine repräsentative Suchmessung
+einen im Bestand häufig vorkommenden Suchbegriff enthalten. Für Vergleiche
+deshalb denselben Bestand, dieselbe
+PowerShell-/SQLite-Version und dieselben Parameter verwenden.
+
 ## Volltextsuche
 
 ```powershell
