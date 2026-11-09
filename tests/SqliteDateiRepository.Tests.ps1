@@ -25,7 +25,11 @@ Describe "SqliteDateiRepository" {
         $script:testRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
             "powershell-suchmaschine-tests-" + [guid]::NewGuid().ToString("N")
         )
-        $script:assemblyPath = Join-Path $script:testRoot "sqlite"
+        # Die SQLite-Runtime liegt im Repository (lib/sqlite) und wird von
+        # Install-Sqlite.ps1 bei Bedarf eingerichtet; ein eigener Temp-Ordner
+        # scheitert unter Windows in AfterAll, weil die geladene native
+        # e_sqlite3.dll bis zum Prozessende gesperrt ist.
+        $script:assemblyPath = Join-Path (Join-Path $PSScriptRoot "..") "lib/sqlite"
         [System.IO.Directory]::CreateDirectory($script:testRoot) | Out-Null
     }
 

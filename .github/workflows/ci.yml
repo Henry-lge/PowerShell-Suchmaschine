@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache SQLite runtime
+        uses: actions/cache@v4
+        with:
+          path: lib/sqlite
+          key: sqlite-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/Persistence/Install-Sqlite.ps1') }}
+
+      - name: Install Pester
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -RequiredVersion 5.7.1 -Force -SkipPublisherCheck -Scope CurrentUser
+          (Get-Module Pester -ListAvailable | Select-Object -First 1).Version
+
+      - name: Run Pester tests
+        run: |
+          Import-Module Pester -RequiredVersion 5.7.1 -Force
+          $config = New-PesterConfiguration
+          $config.Run.Path = './tests/SqliteDateiRepository.Tests.ps1'
+          $config.Run.PassThru = $true
+          $config.TestResult.Enabled = $true
+          $config.TestResult.OutputPath = './testResults.xml'
+          $config.TestResult.OutputFormat = 'NUnitXml'
+          $config.Output.Verbosity = 'Detailed'
+          $results = Invoke-Pester -Configuration $config
+          if ($results.FailedCount -gt 0) {
+            throw "$($results.FailedCount) Pester test(s) failed."
+          }
+          Write-Host "Pester OK: $($results.PassedCount) passed."
+
+      - name: Smoke test suchmaschine.ps1
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP "smoke-fixture"
+          $databasePath = Join-Path $env:RUNNER_TEMP "smoke-index.sqlite3"
+          New-Item -ItemType Directory -Force -Path $fixture | Out-Null
+
+          Set-Content -LiteralPath (Join-Path $fixture "notiz.txt") `
+              -Value "Dies ist eine Testnotiz mit dem Suchbegriff ist enthalten."
+          Set-Content -LiteralPath (Join-Path $fixture "lesen.md") `
+              -Value "# Markdown Test`n`nDas Dokument ist lesbar und indexiert."
+          Set-Content -LiteralPath (Join-Path $fixture "daten.json") `
+              -Value '{ "suchwort": "ist", "wert": 42 }'
+
+          $output = & pwsh -NoProfile -File ./suchmaschine.ps1 `
+              -RootPath $fixture `
+              -DatabasePath $databasePath `
+              -Query "ist" 2>&1 | ForEach-Object { $_.ToString() }
+          $exitCode = $LASTEXITCODE
+
+          if ($exitCode -ne 0) {
+            $output | ForEach-Object { Write-Host $_ }
+            throw "suchmaschine.ps1 failed with exit code $exitCode"
+          }
+          if (-not (Test-Path -LiteralPath $databasePath -PathType Leaf)) {
+            throw "SQLite database was not created at $databasePath"
+          }
+
+          # ANSI-Farbcodes aus der Format-List-Ausgabe entfernen, damit die
+          # Pfad-Zeilen gemaess regularem Ausdruck matchen.
+          $output = $output | ForEach-Object {
+            $_ -replace "\x1b\[[0-9;]*m", ""
+          }
+          $joined = $output -join [Environment]::NewLine
+          foreach ($expected in @("notiz.txt", "lesen.md", "daten.json")) {
+            if ($joined -notmatch "(?m)^\s*Pfad\s*:\s*[^\r\n]*[\\/]$([regex]::Escape($expected))\s*$") {
+              $output | ForEach-Object { Write-Host $_ }
+              throw "Smoke test: no search hit for '$expected'"
+            }
+          }
+          Write-Host "Smoke test passed on $([System.Runtime.InteropServices.RuntimeInformation]::OSDescription)."
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.os }}
+          path: testResults.xml
+          if-no-files-found: warn
+
+  benchmark:
+    name: Benchmark
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache SQLite runtime
+        uses: actions/cache@v4
+        with:
+          path: lib/sqlite
+          key: sqlite-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/Persistence/Install-Sqlite.ps1') }}
+
+      - name: Create benchmark fixture
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP "benchmark-fixture"
+          New-Item -ItemType Directory -Force -Path $fixture | Out-Null
+          1..50 | ForEach-Object {
+            Set-Content -LiteralPath (Join-Path $fixture ("file{0:D3}.txt" -f $_)) `
+                -Value ("Benchmarkzeile {0}: das Suchwort benchmarktoken ist hier." -f $_)
+          }
+          Write-Host "Created 50 fixture files in $fixture"
+
+      - name: Run benchmark
+        run: |
+          $csvPath = Join-Path $env:RUNNER_TEMP "benchmark.csv"
+          & pwsh -NoProfile -File ./tests/Measure-Performance.ps1 `
+              -RootPath (Join-Path $env:RUNNER_TEMP "benchmark-fixture") `
+              -Iterations 10 `
+              -WarmupRuns 1 `
+              -CsvPath $csvPath
+          if ($LASTEXITCODE -ne 0) {
+            throw "Benchmark failed with exit code $LASTEXITCODE"
+          }
+          Copy-Item -LiteralPath $csvPath -Destination ./benchmark.csv -Force
+          Get-Content ./benchmark.csv | Select-Object -First 5 | ForEach-Object { Write-Host $_ }
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmark.csv
+          if-no-files-found: warn
