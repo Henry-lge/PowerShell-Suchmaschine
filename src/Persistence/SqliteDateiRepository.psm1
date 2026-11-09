@@ -770,6 +770,9 @@ ON CONFLICT(
     filename COLLATE $collation,
     extension COLLATE $collation
 ) DO UPDATE SET
+    directory_path = excluded.directory_path,
+    filename = excluded.filename,
+    extension = excluded.extension,
     size_bytes = excluded.size_bytes,
     creation_time_utc_ticks = excluded.creation_time_utc_ticks,
     last_write_time_utc_ticks = excluded.last_write_time_utc_ticks,
