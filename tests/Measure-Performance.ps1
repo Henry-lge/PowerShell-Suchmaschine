@@ -37,16 +37,10 @@ class TimingRepository : DateiRepository {
 
     [double]$GetMilliseconds
     [long]$GetCalls
-    [double]$GetManyMilliseconds
-    [long]$GetManyCalls
-    [double]$SaveMilliseconds
-    [long]$SaveCalls
     [double]$SaveBatchMilliseconds
     [long]$SaveBatchCalls
     [double]$RemoveMilliseconds
     [long]$RemoveCalls
-    [double]$RemoveBatchMilliseconds
-    [long]$RemoveBatchCalls
     [double]$GetPathsUnderMilliseconds
     [long]$GetPathsUnderCalls
 
@@ -64,16 +58,10 @@ class TimingRepository : DateiRepository {
     [void] ResetTimings() {
         $this.GetMilliseconds = 0
         $this.GetCalls = 0
-        $this.GetManyMilliseconds = 0
-        $this.GetManyCalls = 0
-        $this.SaveMilliseconds = 0
-        $this.SaveCalls = 0
         $this.SaveBatchMilliseconds = 0
         $this.SaveBatchCalls = 0
         $this.RemoveMilliseconds = 0
         $this.RemoveCalls = 0
-        $this.RemoveBatchMilliseconds = 0
-        $this.RemoveBatchCalls = 0
         $this.GetPathsUnderMilliseconds = 0
         $this.GetPathsUnderCalls = 0
     }
@@ -90,25 +78,11 @@ class TimingRepository : DateiRepository {
     }
 
     [System.Collections.Generic.Dictionary[string, Datei]] GetMany([string[]]$paths) {
-        $startTimestamp = [System.Diagnostics.Stopwatch]::GetTimestamp()
-        try {
-            return $this.Inner.GetMany($paths)
-        }
-        finally {
-            $this.GetManyMilliseconds += $this.GetElapsedMilliseconds($startTimestamp)
-            $this.GetManyCalls++
-        }
+        return $this.Inner.GetMany($paths)
     }
 
     [void] Save([Datei]$datei) {
-        $startTimestamp = [System.Diagnostics.Stopwatch]::GetTimestamp()
-        try {
-            $this.Inner.Save($datei)
-        }
-        finally {
-            $this.SaveMilliseconds += $this.GetElapsedMilliseconds($startTimestamp)
-            $this.SaveCalls++
-        }
+        $this.Inner.Save($datei)
     }
 
     [void] SaveBatch([Datei[]]$dateien) {
@@ -134,14 +108,7 @@ class TimingRepository : DateiRepository {
     }
 
     [void] RemoveBatch([string[]]$paths) {
-        $startTimestamp = [System.Diagnostics.Stopwatch]::GetTimestamp()
-        try {
-            $this.Inner.RemoveBatch($paths)
-        }
-        finally {
-            $this.RemoveBatchMilliseconds += $this.GetElapsedMilliseconds($startTimestamp)
-            $this.RemoveBatchCalls++
-        }
+        $this.Inner.RemoveBatch($paths)
     }
 
     [string[]] GetPathsUnder([string]$folderPath) {
@@ -204,6 +171,25 @@ function New-TimedCrawler {
     return $crawler
 }
 
+function Invoke-TimedScan {
+    param(
+        [TimingRepository]$Repository,
+        [int]$BatchSize,
+        [string]$ExcludedPath,
+        [string]$RootPath
+    )
+
+    $crawler = New-TimedCrawler $Repository $BatchSize $ExcludedPath
+    $timer = [System.Diagnostics.Stopwatch]::StartNew()
+    $crawler.ScanFolder($RootPath)
+    $timer.Stop()
+    return [PSCustomObject]@{
+        ElapsedMilliseconds = $timer.Elapsed.TotalMilliseconds
+        Summary = $crawler.GetSummary()
+        DocScanner = $crawler.DocScanner
+    }
+}
+
 function Add-Measurement {
     param(
         [Parameter(Mandatory)]
@@ -246,88 +232,130 @@ function Add-Measurement {
     })
 }
 
-function Get-Percentile {
+function Add-ScanMeasurements {
     param(
         [Parameter(Mandatory)]
-        [double[]]$Values,
+        [System.Collections.Generic.List[object]]$Rows,
 
         [Parameter(Mandatory)]
-        [double]$Percentile
+        [int]$Iteration,
+
+        [Parameter(Mandatory)]
+        [string]$Scenario,
+
+        [Parameter(Mandatory)]
+        [double]$ElapsedMilliseconds,
+
+        [Parameter(Mandatory)]
+        [object]$Summary,
+
+        [Parameter(Mandatory)]
+        [TimingRepository]$Repository,
+
+        [Parameter(Mandatory)]
+        [TimingDocScanner]$DocScanner
     )
 
-    $sorted = @($Values | Sort-Object)
-    if ($Percentile -eq 50 -and $sorted.Count % 2 -eq 0) {
-        $middle = [int]($sorted.Count / 2)
-        return ([double]$sorted[$middle - 1] + [double]$sorted[$middle]) / 2
-    }
-
-    $index = [int][Math]::Max(
+    $scannedFiles = $Summary.ScannedFiles
+    $otherCrawlerMilliseconds = [Math]::Max(
         0,
-        [Math]::Ceiling($Percentile / 100 * $sorted.Count) - 1
+        $ElapsedMilliseconds -
+        $Repository.GetMilliseconds -
+        $Repository.SaveBatchMilliseconds -
+        $Repository.RemoveMilliseconds -
+        $Repository.GetPathsUnderMilliseconds -
+        $DocScanner.ReadContentMilliseconds
     )
-    return [double]$sorted[$index]
+
+    $phases = @(
+        @{ Stage = "Crawler gesamt"; Ms = $ElapsedMilliseconds; Calls = 1; Items = $scannedFiles }
+        @{ Stage = "DB Lesen: Get"; Ms = $Repository.GetMilliseconds; Calls = $Repository.GetCalls; Items = $scannedFiles }
+        @{ Stage = "DB Schreiben: SaveBatch"; Ms = $Repository.SaveBatchMilliseconds; Calls = $Repository.SaveBatchCalls; Items = $Summary.NewFiles }
+        @{ Stage = "DB Löschen: Remove"; Ms = $Repository.RemoveMilliseconds; Calls = $Repository.RemoveCalls; Items = $Summary.DeletedFiles }
+        @{ Stage = "DB Ordnerabfrage"; Ms = $Repository.GetPathsUnderMilliseconds; Calls = $Repository.GetPathsUnderCalls; Items = $Summary.DeletedFiles }
+        @{ Stage = "DocScanner: Inhalt lesen"; Ms = $DocScanner.ReadContentMilliseconds; Calls = $DocScanner.ReadContentCalls; Items = $Summary.ContentFilesRead }
+        @{ Stage = "Crawler: übrige Arbeit"; Ms = $otherCrawlerMilliseconds; Calls = 1; Items = $scannedFiles }
+    )
+    foreach ($phase in $phases) {
+        Add-Measurement $Rows $Iteration $Scenario $phase.Stage $phase.Ms `
+            $phase.Calls $phase.Items $scannedFiles $Summary.FailedFiles $Summary.Errors
+    }
 }
 
-function Get-MeasurementSummary {
+function Get-TimeSummary {
     param(
-        [Parameter(Mandatory)]
-        [System.Collections.Generic.List[object]]$Rows
+        [object[]]$Measurements,
+        [string]$Scenario,
+        [string]$Stage
     )
 
-    $summary = [System.Collections.Generic.List[object]]::new()
-    foreach ($group in ($Rows | Group-Object Scenario, Stage)) {
-        $values = [double[]]@($group.Group | ForEach-Object { $_.ElapsedMs })
-        $mean = ($values | Measure-Object -Average).Average
-        $sumOfSquares = 0.0
-        foreach ($value in $values) {
-            $sumOfSquares += [Math]::Pow($value - $mean, 2)
-        }
-        $standardDeviation = 0.0
-        if ($values.Count -gt 1) {
-            $standardDeviation = [Math]::Sqrt($sumOfSquares / ($values.Count - 1))
-        }
-
-        $calls = [long](($group.Group | Measure-Object -Property CallCount -Sum).Sum)
-        $meanPerCall = 0.0
-        if ($calls -gt 0) {
-            $meanPerCall = (
-                [double](($group.Group | Measure-Object -Property ElapsedMs -Sum).Sum) /
-                $calls
-            )
-        }
-
-        $scenario = $group.Group[0].Scenario
-        $totalRows = @(
-            $Rows | Where-Object {
-                $_.Scenario -eq $scenario -and $_.Stage -eq "Crawler gesamt"
-            }
-        )
-        $shareOfCrawlerPercent = $null
-        if ($totalRows.Count -gt 0) {
-            $meanCrawlerMilliseconds = (
-                $totalRows | Measure-Object -Property ElapsedMs -Average
-            ).Average
-            if ($meanCrawlerMilliseconds -gt 0) {
-                $shareOfCrawlerPercent = 100 * $mean / $meanCrawlerMilliseconds
-            }
-        }
-
-        $summary.Add([PSCustomObject][ordered]@{
-            Szenario = $scenario
-            Messpunkt = $group.Group[0].Stage
-            N = $values.Count
-            Mittel_ms = $mean
-            Median_ms = Get-Percentile -Values $values -Percentile 50
-            P95_ms = Get-Percentile -Values $values -Percentile 95
-            SD_ms = $standardDeviation
-            Min_ms = ($values | Measure-Object -Minimum).Minimum
-            Max_ms = ($values | Measure-Object -Maximum).Maximum
-            Mittel_je_Aufruf_ms = $meanPerCall
-            Anteil_Crawler_prozent = $shareOfCrawlerPercent
-        })
+    $values = @(
+        $Measurements |
+            Where-Object { $_.Scenario -eq $Scenario -and $_.Stage -eq $Stage } |
+            ForEach-Object { [double]$_.ElapsedMs } |
+            Sort-Object
+    )
+    if ($values.Count -eq 0) {
+        return $null
     }
 
-    return $summary.ToArray()
+    $middle = [int][Math]::Floor($values.Count / 2)
+    $median = [double]$values[$middle]
+    if ($values.Count % 2 -eq 0) {
+        $median = ($median + [double]$values[$middle - 1]) / 2
+    }
+
+    $p95Index = [int][Math]::Ceiling($values.Count * 0.95) - 1
+    return [PSCustomObject]@{
+        Count = $values.Count
+        Median = $median
+        P95 = [double]$values[$p95Index]
+    }
+}
+
+function Add-DatabaseMeasurements {
+    param(
+        [SqliteDateiRepository]$Database,
+        [string]$RootPath,
+        [string]$Query,
+        [System.Collections.Generic.List[object]]$Rows,
+        [int]$Iteration,
+        [string]$Scenario,
+        [int]$ScannedFiles,
+        [bool]$Record = $true
+    )
+
+    $timer = [System.Diagnostics.Stopwatch]::StartNew()
+    $paths = $Database.GetPathsUnder($RootPath)
+    $timer.Stop()
+    if ($Record) {
+        Add-Measurement $Rows $Iteration $Scenario "SQLite: GetPathsUnder" `
+            $timer.Elapsed.TotalMilliseconds 1 $paths.Count $ScannedFiles
+    }
+
+    $timer = [System.Diagnostics.Stopwatch]::StartNew()
+    $results = @(Search-Query -Database $Database -Query $Query -Limit 100)
+    $timer.Stop()
+    if ($Record) {
+        Add-Measurement $Rows $Iteration $Scenario "SQLite: Search-Query" `
+            $timer.Elapsed.TotalMilliseconds 1 $results.Count $ScannedFiles
+    }
+
+    $timer = [System.Diagnostics.Stopwatch]::StartNew()
+    $files = $Database.GetMany($paths)
+    $timer.Stop()
+    if ($Record) {
+        Add-Measurement $Rows $Iteration $Scenario "SQLite: GetMany" `
+            $timer.Elapsed.TotalMilliseconds 1 $files.Count $ScannedFiles
+    }
+
+    $timer = [System.Diagnostics.Stopwatch]::StartNew()
+    $Database.RemoveBatch($paths)
+    $timer.Stop()
+    if ($Record) {
+        Add-Measurement $Rows $Iteration $Scenario "SQLite: RemoveBatch" `
+            $timer.Elapsed.TotalMilliseconds 1 $paths.Count $ScannedFiles
+    }
 }
 
 $normalizedRoot = [System.IO.Path]::GetFullPath($RootPath)
@@ -352,155 +380,67 @@ $scratchDirectory = Join-Path ([System.IO.Path]::GetTempPath()) (
     "powershell-suchmaschine-benchmark-" + [guid]::NewGuid().ToString("N")
 )
 [System.IO.Directory]::CreateDirectory($scratchDirectory) | Out-Null
-$databasePath = Join-Path $scratchDirectory "benchmark.sqlite3"
+$databasePath = $null
 $database = $null
 $rows = [System.Collections.Generic.List[object]]::new()
 
 try {
-    $initializationTimer = [System.Diagnostics.Stopwatch]::StartNew()
-    $database = Initialize-Database -DatabasePath $databasePath
-    $initializationTimer.Stop()
-
-    $repository = [TimingRepository]::new($database)
     $totalRuns = $WarmupRuns + $Iterations
     $lastScannedFiles = 0
 
     for ($run = 1; $run -le $totalRuns; $run++) {
         $isWarmup = $run -le $WarmupRuns
         $iteration = $run - $WarmupRuns
-        $repository.ResetTimings()
-        $crawler = New-TimedCrawler -Repository $repository -BatchSize $SaveBatchSize `
-            -ExcludedPath $scratchDirectory
+        $runDirectory = Join-Path $scratchDirectory "run-$run"
+        [System.IO.Directory]::CreateDirectory($runDirectory) | Out-Null
+        $databasePath = Join-Path $runDirectory "benchmark.sqlite3"
         $timer = [System.Diagnostics.Stopwatch]::StartNew()
-        $crawler.ScanFolder($normalizedRoot)
+        $database = Initialize-Database -DatabasePath $databasePath
         $timer.Stop()
-
-        $summary = $crawler.GetSummary()
-        $timings = [PSCustomObject]@{
-            RepositoryGet = $repository.GetMilliseconds
-            RepositoryGetCalls = $repository.GetCalls
-            SaveBatch = $repository.SaveBatchMilliseconds
-            SaveBatchCalls = $repository.SaveBatchCalls
-            Remove = $repository.RemoveMilliseconds
-            RemoveCalls = $repository.RemoveCalls
-            GetPathsUnder = $repository.GetPathsUnderMilliseconds
-            GetPathsUnderCalls = $repository.GetPathsUnderCalls
-            ReadContent = $crawler.DocScanner.ReadContentMilliseconds
-            ReadContentCalls = $crawler.DocScanner.ReadContentCalls
-        }
-        $otherCrawlerMilliseconds = [Math]::Max(
-            0,
-            $timer.Elapsed.TotalMilliseconds -
-            $timings.RepositoryGet -
-            $timings.SaveBatch -
-            $timings.Remove -
-            $timings.GetPathsUnder -
-            $timings.ReadContent
-        )
-
         if (-not $isWarmup) {
-            $lastScannedFiles = $summary.ScannedFiles
-            $scenario = "Indexierung"
-            Add-Measurement $rows $iteration $scenario "Crawler gesamt" `
-                $timer.Elapsed.TotalMilliseconds 1 $summary.ScannedFiles `
-                $summary.ScannedFiles $summary.FailedFiles $summary.Errors
-            Add-Measurement $rows $iteration $scenario "DB Lesen: Get" `
-                $timings.RepositoryGet $timings.RepositoryGetCalls $summary.ScannedFiles `
-                $summary.ScannedFiles $summary.FailedFiles $summary.Errors
-            Add-Measurement $rows $iteration $scenario "DB Schreiben: SaveBatch" `
-                $timings.SaveBatch $timings.SaveBatchCalls $summary.NewFiles `
-                $summary.ScannedFiles $summary.FailedFiles $summary.Errors
-            Add-Measurement $rows $iteration $scenario "DB Löschen: Remove" `
-                $timings.Remove $timings.RemoveCalls $summary.DeletedFiles `
-                $summary.ScannedFiles $summary.FailedFiles $summary.Errors
-            Add-Measurement $rows $iteration $scenario "DB Ordnerabfrage" `
-                $timings.GetPathsUnder $timings.GetPathsUnderCalls $summary.DeletedFiles `
-                $summary.ScannedFiles $summary.FailedFiles $summary.Errors
-            Add-Measurement $rows $iteration $scenario "DocScanner: Inhalt lesen" `
-                $timings.ReadContent $timings.ReadContentCalls $summary.ContentFilesRead `
-                $summary.ScannedFiles $summary.FailedFiles $summary.Errors
-            Add-Measurement $rows $iteration $scenario "Crawler: übrige Arbeit" `
-                $otherCrawlerMilliseconds 1 $summary.ScannedFiles `
-                $summary.ScannedFiles $summary.FailedFiles $summary.Errors
+            Add-Measurement $rows $iteration "Leere Datenbank" "Initialize-Database" `
+                $timer.Elapsed.TotalMilliseconds
         }
+
+        $repository = [TimingRepository]::new($database)
+        Add-DatabaseMeasurements $database $normalizedRoot $SearchQuery $rows `
+            $iteration "Leere Datenbank" 0 (-not $isWarmup)
 
         $repository.ResetTimings()
-        $crawler = New-TimedCrawler -Repository $repository -BatchSize $SaveBatchSize `
-            -ExcludedPath $scratchDirectory
-        $timer = [System.Diagnostics.Stopwatch]::StartNew()
-        $crawler.ScanFolder($normalizedRoot)
-        $timer.Stop()
-
-        $summary = $crawler.GetSummary()
-        $otherCrawlerMilliseconds = [Math]::Max(
-            0,
-            $timer.Elapsed.TotalMilliseconds -
-            $repository.GetMilliseconds -
-            $repository.SaveBatchMilliseconds -
-            $repository.RemoveMilliseconds -
-            $repository.GetPathsUnderMilliseconds -
-            $crawler.DocScanner.ReadContentMilliseconds
-        )
-
+        $scan = Invoke-TimedScan $repository $SaveBatchSize $scratchDirectory $normalizedRoot
+        $summary = $scan.Summary
         if (-not $isWarmup) {
             $lastScannedFiles = $summary.ScannedFiles
-            $scenario = "Unveraenderter Rescan"
-            Add-Measurement $rows $iteration $scenario "Crawler gesamt" `
-                $timer.Elapsed.TotalMilliseconds 1 $summary.ScannedFiles `
-                $summary.ScannedFiles $summary.FailedFiles $summary.Errors
-            Add-Measurement $rows $iteration $scenario "DB Lesen: Get" `
-                $repository.GetMilliseconds $repository.GetCalls $summary.ScannedFiles `
-                $summary.ScannedFiles $summary.FailedFiles $summary.Errors
-            Add-Measurement $rows $iteration $scenario "DB Schreiben: SaveBatch" `
-                $repository.SaveBatchMilliseconds $repository.SaveBatchCalls 0 `
-                $summary.ScannedFiles $summary.FailedFiles $summary.Errors
-            Add-Measurement $rows $iteration $scenario "DB Löschen: Remove" `
-                $repository.RemoveMilliseconds $repository.RemoveCalls `
-                $summary.DeletedFiles $summary.ScannedFiles $summary.FailedFiles `
-                $summary.Errors
-            Add-Measurement $rows $iteration $scenario "DB Ordnerabfrage" `
-                $repository.GetPathsUnderMilliseconds $repository.GetPathsUnderCalls `
-                $summary.DeletedFiles $summary.ScannedFiles $summary.FailedFiles `
-                $summary.Errors
-            Add-Measurement $rows $iteration $scenario "DocScanner: Inhalt lesen" `
-                $crawler.DocScanner.ReadContentMilliseconds `
-                $crawler.DocScanner.ReadContentCalls 0 $summary.ScannedFiles `
-                $summary.FailedFiles $summary.Errors
-            Add-Measurement $rows $iteration $scenario "Crawler: übrige Arbeit" `
-                $otherCrawlerMilliseconds 1 $summary.ScannedFiles `
-                $summary.ScannedFiles $summary.FailedFiles $summary.Errors
+            Add-ScanMeasurements $rows $iteration "Leere Datenbank" `
+                $scan.ElapsedMilliseconds $summary $repository $scan.DocScanner
         }
 
-        $indexedPaths = $database.GetPathsUnder($normalizedRoot)
-        $getManyTimer = [System.Diagnostics.Stopwatch]::StartNew()
-        $null = $database.GetMany($indexedPaths)
-        $getManyTimer.Stop()
-        $searchTimer = [System.Diagnostics.Stopwatch]::StartNew()
-        $searchResults = $database.Search($SearchQuery, 100, $null)
-        $searchTimer.Stop()
-        $deleteTimer = [System.Diagnostics.Stopwatch]::StartNew()
-        $database.RemoveBatch($indexedPaths)
-        $deleteTimer.Stop()
-
+        $database.Dispose()
+        $database = $null
+        $timer = [System.Diagnostics.Stopwatch]::StartNew()
+        $database = Initialize-Database -DatabasePath $databasePath
+        $timer.Stop()
         if (-not $isWarmup) {
-            Add-Measurement $rows $iteration "Datenbank isoliert" `
-                "DB Lesen: GetMany" $getManyTimer.Elapsed.TotalMilliseconds 1 `
-                $indexedPaths.Count $lastScannedFiles
-            Add-Measurement $rows $iteration "Datenbank isoliert" `
-                "DB Suche: Search" $searchTimer.Elapsed.TotalMilliseconds 1 `
-                $searchResults.Count $lastScannedFiles
-            Add-Measurement $rows $iteration "Datenbank isoliert" `
-                "DB Löschen: RemoveBatch" $deleteTimer.Elapsed.TotalMilliseconds 1 `
-                $indexedPaths.Count $lastScannedFiles
+            Add-Measurement $rows $iteration "Gefuellte Datenbank" "Initialize-Database" `
+                $timer.Elapsed.TotalMilliseconds
         }
+        $repository = [TimingRepository]::new($database)
 
-        if (($run % 10) -eq 0 -or $run -eq $totalRuns) {
-            Write-Progress -Activity "Performance-Messung" `
-                -Status "$run von $totalRuns Durchlaeufen" `
-                -PercentComplete ([int](100 * $run / $totalRuns))
+        $repository.ResetTimings()
+        $scan = Invoke-TimedScan $repository $SaveBatchSize $scratchDirectory $normalizedRoot
+        $summary = $scan.Summary
+        if (-not $isWarmup) {
+            $lastScannedFiles = $summary.ScannedFiles
+            Add-ScanMeasurements $rows $iteration "Gefuellte Datenbank" `
+                $scan.ElapsedMilliseconds $summary $repository $scan.DocScanner
         }
+        Add-DatabaseMeasurements $database $normalizedRoot $SearchQuery $rows `
+            $iteration "Gefuellte Datenbank" $lastScannedFiles (-not $isWarmup)
+
+        $database.Dispose()
+        $database = $null
+        [System.IO.Directory]::Delete($runDirectory, $true)
     }
-    Write-Progress -Activity "Performance-Messung" -Completed
 
     $csvParent = [System.IO.Path]::GetDirectoryName(
         [System.IO.Path]::GetFullPath($CsvPath)
@@ -526,68 +466,36 @@ try {
     }
     $csvRows | Export-Csv -LiteralPath $CsvPath -NoTypeInformation -Encoding utf8
 
-    Write-Host ""
-    Write-Host "Performance-Messung: PowerShell-Suchmaschine" -ForegroundColor Cyan
-    Write-Host ("Scan-Root:       {0}" -f $normalizedRoot)
-    Write-Host ("Messlaeufe:      {0} (plus {1} Warm-ups)" -f $Iterations, $WarmupRuns)
-    Write-Host ("Dateien/Scan:    {0}" -f $lastScannedFiles)
-    Write-Host ("SaveBatchSize:   {0}" -f $SaveBatchSize)
-    Write-Host ("DB-Initialisierung (einmalig, nicht in Messwerten): {0:N2} ms" -f
-        $initializationTimer.Elapsed.TotalMilliseconds)
-    $scanMeasurements = @($rows | Where-Object { $_.Stage -eq "Crawler gesamt" })
-    $failedFiles = [long]((
-        $scanMeasurements | Measure-Object -Property FailedFiles -Sum
-    ).Sum)
-    $scanErrors = [long]((
-        $scanMeasurements | Measure-Object -Property Errors -Sum
-    ).Sum)
-    Write-Host ("Fehlgeschlagene Dateien/Fehler in Messscans: {0}/{1}" -f
-        $failedFiles, $scanErrors)
-    Write-Host ""
-    Write-Host "Zeiten je Durchlauf in ms; P95 ist das 95. Perzentil." `
-        -ForegroundColor DarkGray
+    $summaryRows = foreach ($group in ($rows | Group-Object Scenario, Stage)) {
+        $summary = Get-TimeSummary $group.Group $group.Group[0].Scenario $group.Group[0].Stage
+        [PSCustomObject]@{
+            Datenbank = $group.Group[0].Scenario
+            Komponente = $group.Group[0].Stage
+            Laeufe = $summary.Count
+            Median_ms = [Math]::Round($summary.Median, 2)
+            P95_ms = [Math]::Round($summary.P95, 2)
+            Aufrufe_je_Lauf = [Math]::Round(
+                ($group.Group | Measure-Object -Property CallCount -Average).Average, 1
+            )
+            Elemente_je_Lauf = [Math]::Round(
+                ($group.Group | Measure-Object -Property ItemCount -Average).Average, 1
+            )
+        }
+    }
 
-    $displayRows = Get-MeasurementSummary -Rows $rows |
-        Sort-Object Szenario, Messpunkt |
-        Select-Object Szenario, Messpunkt, N,
-            @{Name = "Mittel"; Expression = { [Math]::Round($_.Mittel_ms, 2) }},
-            @{Name = "Median"; Expression = { [Math]::Round($_.Median_ms, 2) }},
-            @{Name = "P95"; Expression = { [Math]::Round($_.P95_ms, 2) }},
-            @{Name = "SD"; Expression = { [Math]::Round($_.SD_ms, 2) }},
-            @{Name = "Min"; Expression = { [Math]::Round($_.Min_ms, 2) }},
-            @{Name = "Max"; Expression = { [Math]::Round($_.Max_ms, 2) }},
-            @{Name = "% Crawler"; Expression = {
-                if ($null -eq $_.Anteil_Crawler_prozent) {
-                    "-"
-                }
-                else {
-                    "{0:N1}" -f $_.Anteil_Crawler_prozent
-                }
-            }},
-            @{Name = "ms/Aufruf"; Expression = {
-                [Math]::Round($_.Mittel_je_Aufruf_ms, 4)
-            }}
-    $displayRows | Format-Table -AutoSize | Out-String | Write-Host
-    Write-Host ("Rohdaten: {0}" -f [System.IO.Path]::GetFullPath($CsvPath)) `
-        -ForegroundColor Green
-    Write-Host (
-        "Hinweis: 'Crawler: übrige Arbeit' umfasst Dateisystem-Auflistung, " +
-        "Metadaten, Steuerlogik und PowerShell-Overhead. " +
-        "Dateisystem-Caches und externe Reader beeinflussen die Messung."
-    ) -ForegroundColor DarkGray
+    Write-Host ("Komponenten je Datenbankzustand; Messlaeufe: {0}, Warm-ups: {1}" -f
+        $Iterations, $WarmupRuns)
+    Write-Host "Zeiten in ms (Median / P95); Aufrufe und Elemente sind Mittelwerte je Lauf:"
+    $summaryRows | Format-Table -AutoSize | Out-String | Write-Host
+    Write-Host ("Scan-Dateien: {0}; Suchbegriff: {1}; Rohdaten: {2}" -f
+        $lastScannedFiles, $SearchQuery, [System.IO.Path]::GetFullPath($CsvPath))
 }
 finally {
     if ($null -ne $database) {
         $database.Dispose()
     }
 
-    foreach ($suffix in @("", "-shm", "-wal", "-journal")) {
-        $file = "$databasePath$suffix"
-        if ([System.IO.File]::Exists($file)) {
-            [System.IO.File]::Delete($file)
-        }
-    }
     if ([System.IO.Directory]::Exists($scratchDirectory)) {
-        [System.IO.Directory]::Delete($scratchDirectory)
+        [System.IO.Directory]::Delete($scratchDirectory, $true)
     }
 }
