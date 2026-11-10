@@ -14,5 +14,5 @@ namespace FileSearcherApp
                 .UsePlatformDetect()
                 .WithInterFont()
                 .LogToTrace();
-    }
+    }  
 }

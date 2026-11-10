@@ -1,17 +1,85 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="FileSearcherApp.MainWindow"
-        Title="Avalonia PowerShell Dateisucher" Width="650" Height="450"
+        Title="Dateisuche über Powershell" Width="650" Height="450"
+        Icon="avares://FileSearcherApp/GUIAssets/logo.png"
+        FontFamily="Consolas"
         Background="#0c3835">
-    
-    <StackPanel Margin="20" Spacing="10">
-        <TextBlock Text="Powershell Suchmaschine" FontSize="18" FontWeight="Bold"/>
-        
-        <TextBox x:Name="SearchBox" Watermark="Suchbegriff eingeben (z. B. *.txt)..." />
-        
-        <Button Content="Suche starten" Click="OnSearchClicked" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
-        
-        <TextBlock Text="Ergebnisse:" FontWeight="SemiBold" Margin="0,10,0,0"/>
-        <ListBox x:Name="ResultsList" Height="250" />
-    </StackPanel>
+
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/> <!-- 0: Menü -->
+            <RowDefinition Height="Auto"/> <!-- 1: Titel -->
+            <RowDefinition Height="Auto"/> <!-- 2: Suchfeld -->
+            <RowDefinition Height="Auto"/> <!-- 3: Button -->
+            <RowDefinition Height="*"/>    <!-- 4: Ergebnisliste -->
+        </Grid.RowDefinitions>
+
+        <!-- Zeile 0: Menüzeile mit DockPanel -->
+        <DockPanel Grid.Row="0" Margin="0,0,0,10">
+            <Menu DockPanel.Dock="Right">
+                <MenuItem Header="_Sortieren">
+                    <MenuItem Header="_Aufsteigend" />
+                    <MenuItem Header="_Absteigend" />
+                </MenuItem>
+            </Menu>
+            <Menu DockPanel.Dock="Left">
+                <MenuItem Header="_Filter">
+                    <MenuItem Header="_Nach Name" />
+                    <MenuItem Header="_Nach Endung" />
+                    <MenuItem Header="_Nach Datum" />
+                </MenuItem>
+            </Menu>
+        </DockPanel>
+
+         <!-- Zeile 1: Überschrift / Border -->
+        <Border Grid.Row="2" 
+                CornerRadius="8" 
+                Width="250" 
+                HorizontalAlignment="Right"
+                Background="#001816"
+                Margin="0,0,0,10">
+            <TextBlock Text ="Dateien Gefunden:" 
+                       Foreground="#606e6d"
+                       Background="#001816"
+                       FontSize="16" 
+                       Margin="4" 
+                        HorizontalAlignment="Left" 
+                        VerticalAlignment="Center" />
+        </Border>
+
+        <!-- Zeile 2: Suchfeld / TextBox -->
+        <Border Grid.Row="2" 
+                CornerRadius="8" 
+                Width="250" 
+                HorizontalAlignment="Left"
+                Background="#001816"
+                Margin="0,0,0,10">
+            <TextBox Text="" 
+                     Watermark="Suchbegriff eingeben..."
+                     Background="#001816"
+                     BorderBrush="Transparent"
+                     BorderThickness="1"
+                     FontSize="16" 
+                     Margin="4" />
+        </Border>
+                
+        <!-- Zeile 3: Such-Button -->
+        <Button Grid.Row="3" 
+                Content="Suche starten" 
+                Click="OnSearchClicked" 
+                Foreground="#606e6d"
+                HorizontalAlignment="Stretch" 
+                HorizontalContentAlignment="Center" 
+                Margin="0,0,0,10"/>
+
+        <!-- Zeile 4: Ergebnisliste (ListBox) -->
+        <ListBox Grid.Row="4" 
+                 x:Name="ResultsList" 
+                 HorizontalAlignment="Stretch" 
+                 VerticalAlignment="Stretch" 
+                 Background="#001816"
+                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                 ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
+    </Grid>
 </Window>
