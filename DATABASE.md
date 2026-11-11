@@ -65,20 +65,34 @@ Die Architektur hat sich in aufeinander aufbauenden Schritten entwickelt:
    Speicher. Damit kann der Crawler mit einem In-Memory- oder einem
    persistenten Repository arbeiten.
 4. **Persistenz und Volltextsuche:** `SqliteDateiRepository` speichert
-   Metadaten in `files_metadata` und extrahierten Text im separaten FTS5-Index.
-5. **Redundanz abbauen:** Das Datenbankschema speichert Verzeichnis, Dateiname
-   und Endung getrennt; die Migration übernimmt bestehende Datenbanken und
-   verknüpft FTS-Einträge über interne IDs.
+   Metadaten in `files_metadata` und Dateinamen sowie extrahierten Text im
+   separaten FTS5-Index.
+5. **Schema:** Das Datenbankschema speichert Verzeichnis, Dateiname und Endung
+   getrennt und verknüpft FTS-Einträge über interne IDs.
 6. **Datenbankzugriffe bündeln und optimieren:** `GetMany()` lädt mehrere
    Metadatensätze pro Abfrage, `GetPathsUnder()` nutzt einen Verzeichnisindex,
    und `SaveBatch()` verwendet vorbereitete SQL-Befehle wieder.
-7. **Löschungen und Migration bündeln:** `RemoveBatch()` löscht mehrere
-   Metadatensätze und FTS-Einträge in einer Transaktion. Die Migration des
-   alten Schemas liest Datensätze blockweise und verwendet ein vorbereitetes
-   Insert-Kommando wieder.
+7. **Löschungen bündeln:** `RemoveBatch()` löscht mehrere Metadatensätze und
+   FTS-Einträge in einer Transaktion.
 
 Die Optimierungen dieses letzten Schritts bleiben auf der
 Repository-/Datenbankseite. Der Crawler selbst ist nicht Teil dieser Änderung.
+
+### Bewertung der Schema-Migration
+
+Eine automatische Migration des alten Metadatenschemas (`path`/`path_key`)
+ist nicht nötig, wenn nur das aktuelle Schema verwendet wird. Sie wurde
+entfernt; eine Datenbank mit diesem Altschema wird jetzt mit einer klaren
+Fehlermeldung abgewiesen. Falls eine solche Datenbank doch noch gebraucht wird,
+muss sie mit einer aktuellen Programmversion exportiert oder neu aufgebaut
+werden.
+
+Auch die automatische FTS-Migration wurde entfernt: Der verwendete Index liegt
+bereits im aktuellen Schema. Falls doch eine ältere Datenbank ohne
+Dateinamen-Spalte auftaucht, wird sie mit einer klaren Fehlermeldung
+abgewiesen. Dann kann mit `-DatabasePath` ein neuer Index angelegt und der
+Dateibaum neu gescannt werden; eine automatische Migration würde nur für
+Altbestände benötigt, die weiterverwendet werden müssen.
 
 ## Voraussetzungen und Installation
 
@@ -154,22 +168,34 @@ indiziert. Beim Einfügen setzt das Repository sowohl `file_id` als auch die
 interne FTS-Zeilenkennung `rowid` auf den Wert von `files_metadata.id`. Der Inhalt wird mit SQLite FTS5 und dem Tokenizer
 `unicode61 remove_diacritics 2` indiziert. Dieser Tokenizer normalisiert
 Unicode und entfernt diakritische Zeichen bei der Suche.
+Eine virtuelle FTS5-Tabelle speichert `file_id`, `filename` und den
+extrahierten `content`. `file_id` ist `UNINDEXED`: Er dient der Verknüpfung,
+nicht der Textsuche. Dateinamen enthalten die Endung und werden für alle
+Dateien indiziert, auch wenn kein Reader den Inhalt lesen konnte. Der
+extrahierte Text wird nur bei `has_content = true` eingetragen. Beide
+Textspalten nutzen SQLite FTS5 mit dem Tokenizer
+`unicode61 remove_diacritics 2`, der Unicode normalisiert und diakritische
+Zeichen bei der Suche entfernt.
 
 Der extrahierte Text wird **nicht** in `files_metadata` abgelegt. Das normale
 `Get(path)` gibt nur Metadaten zurück; die Volltextsuche verwendet den
 separaten FTS-Index. Wird eine Datei erneut gespeichert, ersetzt das
-Repository ihren FTS-Eintrag, damit kein alter Text als Treffer erhalten
-bleibt. Bei `has_content = false` gibt es keinen FTS-Eintrag mit Inhalt.
+Repository ihren FTS-Eintrag, damit weder alte Dateinamen noch alter Text als
+Treffer erhalten bleiben. Bei `has_content = false` enthält der FTS-Eintrag
+einen leeren Inhalt, aber weiterhin den Dateinamen.
 
 Die Suchabfrage verknüpft die Tabellen über
 `files_metadata.id = files_fts.rowid`, nicht über die zusätzliche Spalte
 `file_id`. Deshalb aktualisieren `Remove()` und
 `SaveWithinTransaction()` beide Seiten gemeinsam innerhalb einer Transaktion.
-Der FTS-Index speichert keinen zweiten Dateipfad oder Dateinamen.
+Der FTS-Index speichert keinen zweiten Dateipfad; der Dateiname ist dort
+zusätzlich enthalten, damit er direkt durchsuchbar ist.
 
-Beim Öffnen wird ein bestehendes Datenbankschema mit vollständigem `path` und
-`path_key` automatisch migriert. Metadaten und bereits indizierte FTS-Inhalte
-bleiben dabei erhalten.
+Beim Öffnen werden das aktuelle Metadatenschema und die FTS-Spalte `filename`
+vorausgesetzt. Ältere Datenbanken mit `path`/`path_key` oder ohne
+Dateinamen-Spalte werden nicht automatisch migriert. Sie führen zu einer
+Fehlermeldung mit dem Hinweis, eine neue Datenbank anzulegen und erneut zu
+scannen. Neue Datenbanken werden direkt mit dem aktuellen Schema erstellt.
 
 Zeitwerte sind UTC-Ticks aus `.NET DateTime`; sie werden beim Lesen wieder als
 UTC-Datumswerte rekonstruiert. Dadurch bleibt die Genauigkeit des Zeitstempels
@@ -225,7 +251,8 @@ und Suchtext. Die Abfrage selbst bleibt dadurch von den Datenwerten getrennt.
   speichert danach nur neue oder geänderte Dateien.
 - Ein vorhandener Pfad wird aktualisiert statt dupliziert.
 - Beim Aktualisieren wird zunächst der bisherige FTS-Eintrag entfernt und
-  danach - sofern `HasContent` gesetzt ist - der neue Inhalt indiziert.
+  danach der Dateiname und - sofern `HasContent` gesetzt ist - der neue Inhalt
+  indiziert.
 - `Remove(path)` entfernt Metadaten und Volltextindex-Eintrag atomar.
 - `GetPathsUnder(folder)` liefert gespeicherte Pfade im Ordnerbaum. Der
   Crawler nutzt dies zur Lösch-Erkennung.
@@ -417,11 +444,7 @@ ohne den Crawler oder die GUI zu ändern:
    Standardimplementierung des Repository-Vertrags bleibt kompatibel und
    entfernt Pfade einzeln; SQLite überschreibt `RemoveBatch()` für die
    gebündelte Variante.
-5. Bei der Migration des alten Schemas werden höchstens 300 Metadatensätze
-   gleichzeitig im Arbeitsspeicher gehalten. Ein vorbereitetes Insert-Kommando
-   wird für alle migrierten Datensätze wiederverwendet. Die bestehende
-   Migrationstransaktion und ihr Rollback-Verhalten bleiben erhalten.
-6. Damit ein Scan von den gebündelten Löschungen profitiert, muss der Crawler
+5. Damit ein Scan von den gebündelten Löschungen profitiert, muss der Crawler
    künftig seine einzelnen `Remove()`-Aufrufe an geeigneten Stellen durch
    Aufrufe von `RemoveBatch()` ersetzen. Diese Integration liegt außerhalb
    dieses Entwicklungsschritts; entsprechend bleiben auch die
@@ -506,6 +529,9 @@ PowerShell-/SQLite-Version und dieselben Parameter verwenden.
 Search-Query -Database $database -Query "vorlesung"
 Search-Query -Database $database -Query '"lineare algebra"' -Limit 20
 Search-Query -Database $database -Query "skript" -Extension ".pdf"
+Search-Query -Database $database -Query "skript" -SearchMode FileName
+Search-Query -Database $database -Query "skript" -SearchMode Content
+Search-Query -Database $database -Query "skript" -SearchMode Both
 ```
 
 Parameter:
@@ -514,6 +540,9 @@ Parameter:
 - `Limit`: Höchstens 1 bis 1000 Ergebnisse; Standard ist 100.
 - `Extension`: Optionaler Dateiendungsfilter. Ein fehlender Punkt wird
   ergänzt und die Eingabe kleingeschrieben.
+- `SearchMode`: `FileName`, `Content` oder `Both`; Standard ist `Both`.
+  Dateinamen werden auch dann indexiert, wenn kein Reader den Dateiinhalt
+  extrahieren konnte. Der Dateiendungsfilter funktioniert in allen Modi.
 
 Jedes Ergebnis enthält `File` (Dateimetadaten ohne Inhalt), `Snippet` und
 `Score`. Der Ausschnitt markiert den Treffer mit eckigen Klammern; ausgelassene
@@ -577,13 +606,13 @@ suchbar.
 
 ```mermaid
 flowchart TD
-    A["Search-Query(Query, Limit, Extension)"] --> B{"Query leer?"}
+    A["Search-Query(Query, Limit, Extension, SearchMode)"] --> B{"Query leer?"}
     B -- Ja --> C["leeres Ergebnis"]
     B -- Nein --> D{"Limit zwischen 1 und 1000?"}
     D -- Nein --> E["Ausnahme"]
     D -- Ja --> F["Extension normalisieren<br/>optional"]
-    F --> G["files_fts MATCH Query"]
-    G --> H["JOIN auf files_metadata<br/>über m.id = files_fts.rowid"]
+    F --> G["FTS-MATCH auf filename, content oder beiden"]
+    G --> H["JOIN auf files_metadata<br/>über file_id"]
     H --> I["Extension-Filter anwenden"]
     I --> J["BM25-Rang berechnen<br/>Snippet erzeugen"]
     J --> K["nach Rang ordnen<br/>und Limit anwenden"]
@@ -627,10 +656,11 @@ unspezifische Teilzeichenkette. Ein Ausdruck mit Anführungszeichen sucht zum
 Beispiel eine Phrase; FTS5-Operatoren und -Syntax werden ebenfalls
 interpretiert. Ein syntaktisch ungültiger FTS-Ausdruck kann eine SQLite-
 Ausnahme auslösen und wird nicht in „keine Treffer“ umgewandelt. Die
-SQL-Abfrage verwendet `bm25(files_fts)` für die
-Relevanz und `snippet(files_fts, 1, '[', ']', '...', 16)` für einen kurzen
-Trefferkontext. Die Spaltennummer `1` ist nullbasiert und bezeichnet in
-`files_fts(file_id, content)` die Spalte `content`; die ID ist Spalte `0`.
+SQL-Abfrage verwendet `bm25(files_fts)` für die Relevanz und erzeugt den
+Snippet aus der Spalte, in der der Treffer gefunden wurde. In
+`files_fts(file_id, filename, content)` sind die FTS-Spaltennummern `1` für
+den Dateinamen und `2` für den Inhalt; `file_id` (Spalte `0`) ist nicht
+indiziert.
 SQLite ordnet `rank` aufsteigend, weil bei BM25 kleinere Werte relevanter
 sind. Die PowerShell-Schicht gibt `-rank` zurück, so dass dort ein größerer
 `Score` für einen besseren Treffer steht.
@@ -799,9 +829,10 @@ Repository-Instanz zurückzugeben.
 
 Der Konstruktor erstellt mit `ReadWriteCreate` eine neue Datenbankdatei, wenn
 sie noch nicht existiert. Nach dem Öffnen ruft er `InitializeSchema()` auf.
-Die Schema-Initialisierung ist wiederholbar. Alte Datenbanken mit
-`path_key`-Schema werden innerhalb einer Transaktion umgebaut; bestehende
-Metadaten und FTS-Inhalte bleiben erhalten.
+Die Schema-Initialisierung ist wiederholbar. Sie setzt das aktuelle
+Metadatenschema und die aktuelle FTS-Tabelle voraus und weist ältere
+Datenbanken mit einer Fehlermeldung ab. Für einen Altindex kann ein neuer
+Datenbankpfad angegeben und der Ordner erneut gescannt werden.
 
 ## Repository-Methoden und ihre Datenbankwirkung
 
@@ -811,11 +842,11 @@ Metadaten und FTS-Inhalte bleiben erhalten.
 | `GetMany(paths)` | Je höchstens 300 Pfade eine `VALUES`-CTE mit Join auf den zusammengesetzten Pfadindex. | Gibt ein Dictionary vorhandener Dateien zurück; fehlende Pfade fehlen. |
 | `Save(file)` | Delegiert an `SaveBatch()` mit genau einem Eintrag. | Einzelschreiben erhalten dieselben Validierungs- und Transaktionseigenschaften. |
 | `SaveBatch(files)` | Validiert Pfade vorab, beginnt Transaktion und verwendet vorbereitete Metadaten- und FTS-Befehle für alle Einträge erneut. | Alles oder nichts für den Batch. Leere Batches sind No-op. |
-| `SaveWithinTransaction(file)` | Upsert der Metadaten, Löschen des alten FTS-Satzes, optionales Einfügen des neuen Texts über die vorbereiteten Befehle. | Der Inhalt wird nur bei `HasContent = true` in FTS geschrieben. |
+| `SaveWithinTransaction(file)` | Upsert der Metadaten, Löschen des alten FTS-Satzes, Einfügen des Dateinamens und optional des neuen Texts über die vorbereiteten Befehle. | Der Dateiname wird immer indiziert; der Inhalt nur bei `HasContent = true`. |
 | `Remove(path)` | Delegiert an `RemoveBatch()` mit genau einem Pfad. | Verhindert verwaiste Treffer oder Metadatensätze, solange der Vorgang erfolgreich ist. |
 | `RemoveBatch(paths)` | Löscht je höchstens 300 Pfade pro SQL-Gruppe aus FTS und Metadaten; alle Gruppen teilen sich eine Transaktion. | Validiert vorab, ignoriert doppelte normalisierte Pfade und rollt bei Fehlern den gesamten Aufruf zurück. |
-| `GetPathsUnder(folder)` | Indexierte Gleichheits-/Präfixsuche über `UNION ALL`; bei Unicode unter Windows/macOS breitere ASCII-Präfixsuche. Kandidaten werden mit `PathUtil` exakt geprüft. | Liefert die Pfade für die Lösch-Erkennung; bei selektiven Ordnern kein Lesen des gesamten Index nötig. Siehe [Performance-Optimierung](#performance-optimierung-ordnerabfragen-ohne-vollscan). |
-| `Search(query, limit, extension)` | FTS5-`MATCH`, Join auf Metadaten, optionaler Endungsfilter, Rang, Snippet und Limit. | Gibt Objekte mit `File`, `Snippet`, `Score` zurück. |
+| `GetPathsUnder(folder)` | Indizierte Suche nach identischem Verzeichnis oder passendem Verzeichnispräfix; Kandidaten werden mit `PathUtil` exakt geprüft. | Gibt die Kandidaten für die Lösch-Erkennung zurück, ohne alle Metadaten zu lesen. |
+| `Search(query, limit, extension, searchMode)` | FTS5-`MATCH` auf Dateiname, Inhalt oder beides; Join auf Metadaten, optionaler Endungsfilter, Rang, Snippet und Limit. | Gibt Objekte mit `File`, `Snippet`, `Score` zurück. |
 | `Dispose()` | Schließt die SQLite-Verbindung einmalig. | Nach `Dispose()` weisen Repository-Methoden mit `EnsureOpen()` auf die ungültige Verwendung hin. |
 
 Die SQL-Kommandos, Reader, Transaktionen und Verbindungen werden im Code
@@ -914,9 +945,7 @@ sequenceDiagram
         Repo->>Meta: Metadaten einfügen oder aktualisieren
         Meta-->>Repo: Datei-ID
         Repo->>FTS: alten FTS-Eintrag für Datei-ID löschen
-        opt HasContent = true
-            Repo->>FTS: neuen extrahierten Text einfügen
-        end
+        Repo->>FTS: Dateiname und optional extrahierten Text einfügen
     end
     alt alle Dateien erfolgreich
         Repo->>DB: COMMIT
@@ -928,7 +957,7 @@ sequenceDiagram
 
 `Save(file)` verwendet denselben Ablauf wie `SaveBatch()` mit genau einer
 Datei. Metadaten und Volltext werden atomar aktualisiert; bei Dateien ohne
-Inhalt wird ein vorhandener FTS-Eintrag entfernt, aber kein neuer angelegt.
+Inhalt wird der Dateiname im FTS-Index gespeichert, der Inhalt bleibt leer.
 
 ### Dateien aus dem Index entfernen
 
@@ -1015,18 +1044,20 @@ sequenceDiagram
     participant Repo as SqliteDateiRepository
     participant FTS as files_fts
     participant Meta as files_metadata
-    Caller->>Query: Query, Limit, Extension
-    Query->>Repo: Search(Query, Limit, Extension)
+    Caller->>Query: Query, Limit, Extension, SearchMode
+    Query->>Repo: Search(Query, Limit, Extension, SearchMode)
     Repo->>Repo: Suchparameter und Limit validieren
-    Repo->>FTS: FTS5-MATCH, Rang und Snippet berechnen
-    FTS->>Meta: Treffer über files_fts.rowid = files_metadata.id verknüpfen
+    Repo->>FTS: FTS5-MATCH im gewählten Suchbereich
+    Repo->>FTS: Rang und passenden Snippet berechnen
+    FTS->>Meta: Treffer über Datei-ID mit Metadaten verknüpfen
     Meta-->>Repo: Metadaten, Rang und Snippet
     Repo-->>Query: Treffer mit File, Snippet und Score
     Query-->>Caller: Suchergebnisse
 ```
 
 Ein leerer Suchtext liefert keine Treffer. Das Limit ist auf 1 bis 1000
-begrenzt; der Dateiendungsfilter ist optional.
+begrenzt; der Dateiendungsfilter ist optional. `SearchMode` ist `FileName`,
+`Content` oder `Both` und standardmäßig `Both`.
 
 ### Datenbankverbindung schließen
 

@@ -1,4 +1,4 @@
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # =============================================================================
@@ -24,6 +24,7 @@
 
 
 # Ein Verzeichniseintrag.
+[NoRunspaceAffinity()]
 class CompoundFileEntry {
     [int]$Id
     [string]$Name
@@ -47,6 +48,7 @@ class CompoundFileEntry {
 }
 
 
+[NoRunspaceAffinity()]
 class CompoundFile {
 
     hidden static [byte[]]$Signature = [byte[]](0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1)
@@ -205,17 +207,19 @@ class CompoundFile {
             $guard++
         }
 
-        $fat = [System.Collections.Generic.List[int]]::new()
+        # Jeder FAT-Sektor wird am Stück in das int-Array kopiert, statt jede
+        # Zahl einzeln zu lesen. Das Format ist little-endian wie alle
+        # Plattformen, auf denen .NET hier läuft.
+        $fat = [int[]]::new($fatSectors.Count * $entriesPerSector)
+        $index = 0
 
         foreach ($sector in $fatSectors) {
             $offset = $this._SectorOffset($sector)
-
-            for ($i = 0; $i -lt $entriesPerSector; $i++) {
-                $fat.Add([System.BitConverter]::ToInt32($this._data, $offset + $i * 4))
-            }
+            [System.Buffer]::BlockCopy($this._data, $offset, $fat, $index * 4, $entriesPerSector * 4)
+            $index += $entriesPerSector
         }
 
-        return $fat.ToArray()
+        return $fat
     }
 
 
@@ -326,10 +330,7 @@ class CompoundFile {
 
     hidden static [int[]] ToIntArray([byte[]]$bytes) {
         $values = [int[]]::new([Math]::Floor($bytes.Length / 4))
-
-        for ($i = 0; $i -lt $values.Length; $i++) {
-            $values[$i] = [System.BitConverter]::ToInt32($bytes, $i * 4)
-        }
+        [System.Buffer]::BlockCopy($bytes, 0, $values, 0, $values.Length * 4)
 
         return $values
     }

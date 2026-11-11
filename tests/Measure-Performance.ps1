@@ -12,7 +12,7 @@ param(
     [string]$RootPath,
 
     [ValidateRange(1, 100000)]
-    [int]$Iterations = 100,
+    [int]$Iterations = 1,
 
     [ValidateRange(0, 1000)]
     [int]$WarmupRuns = 3,

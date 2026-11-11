@@ -2,7 +2,7 @@ using module "../ContentReader.psm1"
 using module "../Shared/XmlText.psm1"
 using module "../Shared/OpenXml.psm1"
 
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # =============================================================================
@@ -21,6 +21,7 @@ using module "../Shared/OpenXml.psm1"
 # Die eigenen Beziehungen jeder Folie verweisen auf ihre Notizen
 # (notesSlide). Absätze sind <a:p>, der Text steht in <a:t>, <a:br/> ist ein
 # Zeilenumbruch.
+[NoRunspaceAffinity()]
 class PowerPointContentReader : ContentReader {
 
     hidden static [XmlTextRules]$TextRules = [PowerPointContentReader]::CreateRules()

@@ -1,7 +1,7 @@
 using module "../ContentReader.psm1"
 using module "../Shared/CompoundFile.psm1"
 
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # =============================================================================
@@ -29,6 +29,7 @@ using module "../Shared/CompoundFile.psm1"
 #   angezeigte Text bleibt erhalten.
 #
 # Verschlüsselte Dokumente und Dateien von Word 6/95 liefern keinen Text.
+[NoRunspaceAffinity()]
 class LegacyWordContentReader : ContentReader {
 
     LegacyWordContentReader() {

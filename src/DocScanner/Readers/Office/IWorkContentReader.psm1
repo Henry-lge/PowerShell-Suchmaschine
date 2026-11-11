@@ -2,7 +2,7 @@ using module "../ContentReader.psm1"
 using module "../Shared/XmlText.psm1"
 using module "../Shared/IWorkArchive.psm1"
 
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # =============================================================================
@@ -35,6 +35,7 @@ using module "../Shared/IWorkArchive.psm1"
 # durchläuft sie wie normale Ordner. Andere Dateien mit diesen Endungen
 # (z. B. Lizenzdateien ".key") sind keine ZIP-Archive und liefern keinen
 # Text.
+[NoRunspaceAffinity()]
 class IWorkContentReader : ContentReader {
 
     hidden static [int]$TextStorage = 2001

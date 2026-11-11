@@ -17,7 +17,7 @@ using module "./Readers/Mail/MsgContentReader.psm1"
 using module "./Readers/Media/MediaContentReader.psm1"
 using module "./Readers/Archive/ArchiveContentReader.psm1"
 
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # =============================================================================
@@ -27,6 +27,11 @@ using module "./Readers/Archive/ArchiveContentReader.psm1"
 # Der DocScanner liest den Textinhalt einer einzelnen Datei. Er durchläuft
 # keine Ordner (das ist Aufgabe des Crawlers), sondern wählt nur den Reader,
 # der für die Dateiendung registriert ist, und gibt die Arbeit an ihn weiter.
+#
+# Alle Klassen des DocScanners und seiner Reader tragen [NoRunspaceAffinity()],
+# weil der Crawler sie in mehreren Worker-Runspaces gleichzeitig verwendet
+# (siehe Crawler.psm1). Neue Reader brauchen das Attribut ebenfalls.
+[NoRunspaceAffinity()]
 class DocScanner {
 
     # Größere Dateien werden übersprungen, damit der Speicherbedarf
@@ -48,8 +53,22 @@ class DocScanner {
     )
 
 
+    # True, sobald nach dem Konstruktor ein Reader registriert wurde.
+    hidden [bool]$_defaultsRegistered = $false
+    hidden [bool]$_hasCustomReaders = $false
+
+
     DocScanner() {
         $this.RegisterDefaultReaders()
+        $this._defaultsRegistered = $true
+    }
+
+
+    # True, wenn zur Laufzeit eigene Reader registriert wurden. Die Worker des
+    # Crawlers bauen ihren DocScanner nur mit den Standard-Readern nach und
+    # kennen diese Reader nicht; der Crawler liest dann nacheinander.
+    [bool] HasCustomReaders() {
+        return $this._hasCustomReaders
     }
 
 
@@ -90,6 +109,10 @@ class DocScanner {
     [void] RegisterReader([ContentReader]$reader) {
         if ($null -eq $reader) {
             return
+        }
+
+        if ($this._defaultsRegistered) {
+            $this._hasCustomReaders = $true
         }
 
         $this._allReaders.Add($reader)
@@ -143,6 +166,39 @@ class DocScanner {
             $file.Length -le $this.MaxContentSizeBytes -and
             $this.CanRead($file.Extension)
         )
+    }
+
+
+    # Kündigt den Readern ein Paket von Dateien an, die gleich einzeln
+    # gelesen werden (siehe ContentReader.Prepare). Fehler hier sind nicht
+    # schlimm: Dann liest ReadContent() die Datei wie ohne Vorbereitung.
+    [void] Prepare([System.IO.FileInfo[]]$files) {
+        $byReader = [System.Collections.Generic.Dictionary[ContentReader, System.Collections.Generic.List[System.IO.FileInfo]]]::new()
+
+        foreach ($file in $files) {
+            if (-not $this.ShouldRead($file)) {
+                continue
+            }
+
+            $reader = $this._readers[$file.Extension]
+            $list = $null
+
+            if (-not $byReader.TryGetValue($reader, [ref]$list)) {
+                $list = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
+                $byReader[$reader] = $list
+            }
+
+            $list.Add($file)
+        }
+
+        foreach ($entry in $byReader.GetEnumerator()) {
+            try {
+                $entry.Key.Prepare($entry.Value.ToArray())
+            }
+            catch {
+                # Die Dateien werden dann einzeln gelesen.
+            }
+        }
     }
 
 

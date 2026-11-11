@@ -1,4 +1,4 @@
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # =============================================================================
@@ -14,6 +14,7 @@
 # Blätter, auch wenn ein Programm die Teile anders benannt hat.
 
 
+[NoRunspaceAffinity()]
 class OpenXmlRelationship {
     [string]$Id
 
@@ -26,6 +27,7 @@ class OpenXmlRelationship {
 }
 
 
+[NoRunspaceAffinity()]
 class OpenXmlPackage {
 
     # "ppt/presentation.xml" -> "ppt/_rels/presentation.xml.rels".

@@ -52,8 +52,23 @@ Describe 'Database interface compatibility (<Mode>)' -ForEach @(
         $second.LastWriteTimeUtc = $second.LastWriteTimeUtc.AddMinutes(1)
         $second.Content = 'updatedinterfacemarker'
         (Sync-Files -Database $database -Files @($second)).Updated | Should -Be 1
-        @(Search-Query -Database $database -Query 'interfacemarker' -Limit 1 -Extension 'txt').Count | Should -Be 1
-        $results = @(Search-Query -Database $database -Query 'updatedinterfacemarker')
+        $contentResults = @(
+            Search-Query -Database $database -Query 'interfacemarker' `
+                -SearchMode Content -Limit 1 -Extension 'txt'
+        )
+        $contentResults | Should -HaveCount 1
+        $filenameResults = @(
+            Search-Query -Database $database -Query 'first' -SearchMode FileName
+        )
+        $filenameResults | Should -HaveCount 1
+        $filenameResults[0].File.Path | Should -Be $first.Path
+        (Search-Query -Database $database -Query 'first' -SearchMode Content) |
+            Should -BeNullOrEmpty
+
+        $results = @(
+            Search-Query -Database $database -SearchMode Content `
+                -Query 'updatedinterfacemarker'
+        )
         $results.Count | Should -Be 1
         $results[0].File.Path | Should -Be $second.Path
     }
@@ -69,11 +84,22 @@ Describe 'Database interface compatibility (<Mode>)' -ForEach @(
         $crawler.ScanFolder($fixture)
         $crawler.Errors.Count | Should -Be 0
         $database.GetPathsUnder($fixture).Count | Should -Be 2
-        @(Search-Query -Database $database -Query 'crawlerinterfacemarker').Count | Should -Be 2
+        $results = @(
+            Search-Query -Database $database -Query 'crawlerinterfacemarker' `
+                -SearchMode Both
+        )
+        $results | Should -HaveCount 2
+        (Search-Query -Database $database -Query 'notes' -SearchMode FileName).File.Path |
+            Should -Be (Join-Path $fixture 'notes.txt')
+        (Search-Query -Database $database -Query 'notes' -SearchMode Content) |
+            Should -BeNullOrEmpty
         $crawler.ScanFolder($fixture)
         $crawler.Errors.Count | Should -Be 0
         $database.GetPathsUnder($fixture).Count | Should -Be 2
-        @(Search-Query -Database $database -Query 'crawlerinterfacemarker').Count | Should -Be 2
+        @(
+            Search-Query -Database $database -Query 'crawlerinterfacemarker' `
+                -SearchMode Both
+        ) | Should -HaveCount 2
     }
 
     It 'preserves every DateiRepository operation and the crawler assignment contract' {

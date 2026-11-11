@@ -1,6 +1,6 @@
 using module "../ContentReader.psm1"
 
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # =============================================================================
@@ -24,6 +24,7 @@ using module "../ContentReader.psm1"
 #   $tool = $this.FindTool(@("ffprobe"))
 #   $json = $this.RunTool($tool, @("-v", "quiet", "-print_format", "json", "-show_format", $file.FullName))
 #   $tags = ($json | ConvertFrom-Json).format.tags
+[NoRunspaceAffinity()]
 class MediaContentReader : ContentReader {
 
     MediaContentReader() {
