@@ -7,13 +7,13 @@ using module "./src/Persistence/SqliteDateiRepository.psm1"
 [CmdletBinding()]
 param(
     # Startordner für den Scan. Standardmäßig der Benutzerordner.
-    [string]$RootPath = $HOME,
+    [string]$RootPath = (Join-Path $HOME ""),
 
     # Zusätzliche absolute Ordnerpfade, die übersprungen werden.
     [string[]]$ExcludePath = @(),
 
     # Optionaler FTS5-Suchausdruck; ohne Wert wird nur gescannt.
-    [string]$Query = "",
+    [string]$Query = "ist",
 
     # Persistenter SQLite-Index.
     [string]$DatabasePath = (Join-Path $PSScriptRoot "data/index.sqlite3"),
@@ -66,7 +66,7 @@ try {
     # ist; Dispose() im finally-Block schließt sie.
     if (-not [string]::IsNullOrWhiteSpace($Query)) {
         $results = @(
-            Search-Query -Database $database -Query $Query `
+            Search-Query -Database $crawler.Repository -Query $Query `
                 -Limit $SearchLimit -SearchMode $SearchMode
         )
         if ($results.Count -eq 0) {
