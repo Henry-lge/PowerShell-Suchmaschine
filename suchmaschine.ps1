@@ -62,11 +62,33 @@ try {
     Write-Host "Supported content types: $($crawler.DocScanner.GetSupportedExtensions() -join ', ')"
     Write-Host "Scan duration: $($stopwatch.Elapsed.TotalSeconds.ToString('F3')) seconds"
 
+    # Videos werden nach dem Scan im Hintergrund gelesen, auf Fotos werden
+    # dort die Objekte erkannt; alle übrigen Inhalte sind bereits im Index.
+    # Das Skript wartet darauf, weil Dispose() die Verarbeitung sonst
+    # abbrechen würde (Abgebrochenes holt der nächste Scan nach).
+    $pending = $crawler.GetBackgroundPending()
+
+    if ($pending -gt 0) {
+        Write-Host "Processing $pending file(s) in the background (videos, objects in photos) ..."
+        $backgroundWatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+        while (-not $crawler.WaitForBackground(5000)) {
+            Write-Host "  remaining: $($crawler.GetBackgroundPending())"
+        }
+
+        Write-Host (
+            "Background done: {0} read, {1} failed, {2:F1} seconds" -f
+            $crawler.BackgroundCompleted,
+            $crawler.BackgroundFailed,
+            $backgroundWatch.Elapsed.TotalSeconds
+        )
+    }
+
     # Gesucht wird über die Datenbank des Crawlers, solange sie noch offen
     # ist; Dispose() im finally-Block schließt sie.
     if (-not [string]::IsNullOrWhiteSpace($Query)) {
         $results = @(
-            Search-Query -Database $database -Query $Query `
+            Search-Query -Database $crawler.Repository -Query $Query `
                 -Limit $SearchLimit -SearchMode $SearchMode
         )
         if ($results.Count -eq 0) {
@@ -90,6 +112,7 @@ try {
     }
 }
 finally {
-    # Schließt Worker, Schreib-Thread und die Datenbank.
+    # Schließt Worker, Schreib-Thread, Hintergrundverarbeitung und die
+    # Datenbank.
     $crawler.Dispose()
 }

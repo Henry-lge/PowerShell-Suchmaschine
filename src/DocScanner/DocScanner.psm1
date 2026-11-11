@@ -161,10 +161,78 @@ class DocScanner {
     # Gibt $true zurück, wenn der Inhalt der Datei gelesen werden soll: Es
     # gibt einen Reader und die Datei ist klein genug.
     [bool] ShouldRead([System.IO.FileInfo]$file) {
+        if ($null -eq $file -or -not $this.CanRead($file.Extension)) {
+            return $false
+        }
+
+        # Ein Reader kann eine eigene Grenze haben (ContentReader.MaxFileSizeBytes).
+        $limit = $this._readers[$file.Extension].MaxFileSizeBytes
+
+        if ($limit -le 0) {
+            $limit = $this.MaxContentSizeBytes
+        }
+
+        return $file.Length -le $limit
+    }
+
+
+    # True, wenn der Reader dieser Datei nach dem Lesen im Hintergrund noch
+    # etwas ergänzt (ContentReader.CanEnrich).
+    [bool] CanEnrich([System.IO.FileInfo]$file) {
+        return (
+            $this.ShouldRead($file) -and
+            $this._readers[$file.Extension].CanEnrich($file)
+        )
+    }
+
+
+    # Ergänzungen für mehrere Dateien (ContentReader.Enrich), gleiche
+    # Reihenfolge wie $files. Jeder Reader bekommt seine Dateien auf einmal.
+    [string[]] Enrich([System.IO.FileInfo[]]$files) {
+        $results = [string[]]::new($files.Length)
+        $byReader = [System.Collections.Generic.Dictionary[ContentReader, System.Collections.Generic.List[int]]]::new()
+
+        for ($i = 0; $i -lt $files.Length; $i++) {
+            if (-not $this.CanEnrich($files[$i])) {
+                continue
+            }
+
+            $reader = $this._readers[$files[$i].Extension]
+            $indexes = $null
+
+            if (-not $byReader.TryGetValue($reader, [ref]$indexes)) {
+                $indexes = [System.Collections.Generic.List[int]]::new()
+                $byReader[$reader] = $indexes
+            }
+
+            $indexes.Add($i)
+        }
+
+        foreach ($entry in $byReader.GetEnumerator()) {
+            $subset = [System.IO.FileInfo[]]::new($entry.Value.Count)
+
+            for ($j = 0; $j -lt $subset.Length; $j++) {
+                $subset[$j] = $files[$entry.Value[$j]]
+            }
+
+            $texts = $entry.Key.Enrich($subset)
+
+            for ($j = 0; $j -lt $subset.Length -and $j -lt $texts.Length; $j++) {
+                $results[$entry.Value[$j]] = $texts[$j]
+            }
+        }
+
+        return $results
+    }
+
+
+    # True, wenn der Reader dieser Datei im Hintergrund laufen soll
+    # (ContentReader.RunsInBackground).
+    [bool] RunsInBackground([System.IO.FileInfo]$file) {
         return (
             $null -ne $file -and
-            $file.Length -le $this.MaxContentSizeBytes -and
-            $this.CanRead($file.Extension)
+            $this.CanRead($file.Extension) -and
+            $this._readers[$file.Extension].RunsInBackground
         )
     }
 
