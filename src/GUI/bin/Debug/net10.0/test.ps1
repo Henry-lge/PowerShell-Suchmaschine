@@ -1,1 +1,0 @@
-Write-Output "Ich bin ein Powershell skript :DDD"
