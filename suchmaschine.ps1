@@ -20,7 +20,11 @@ param(
 
     # Maximale Anzahl an Suchtreffern.
     [ValidateRange(1, 1000)]
-    [int]$SearchLimit = 100
+    [int]$SearchLimit = 100,
+
+    # Suchbereich: Dateiname, extrahierter Dateiinhalt oder beides.
+    [ValidateSet("FileName", "Content", "Both")]
+    [string]$SearchMode = "Both"
 )
 
 # Der Crawler öffnet die Datenbank unter DatabasePath selbst. Nur so kann er
@@ -61,8 +65,10 @@ try {
     # Gesucht wird über die Datenbank des Crawlers, solange sie noch offen
     # ist; Dispose() im finally-Block schließt sie.
     if (-not [string]::IsNullOrWhiteSpace($Query)) {
-        $results = @(Search-Query -Database $crawler.Repository -Query $Query -Limit $SearchLimit)
-
+        $results = @(
+            Search-Query -Database $database -Query $Query `
+                -Limit $SearchLimit -SearchMode $SearchMode
+        )
         if ($results.Count -eq 0) {
             # Klammern nötig: -f bindet stärker als +, sonst würde nur der
             # letzte Teil formatiert.

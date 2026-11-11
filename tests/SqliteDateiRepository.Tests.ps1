@@ -147,16 +147,49 @@ Describe "SqliteDateiRepository" {
         $script:database.SaveBatch([Datei[]]@($metadataOnly, $file))
         $script:database.Save($file)
 
-        (Invoke-TestSql "SELECT rowid FROM files_fts;") | Should -Be 2
+        (Invoke-TestSql "SELECT rowid FROM files_fts WHERE filename = 'indexed.txt';") |
+            Should -Be 2
         (Invoke-TestSql "SELECT count(*) FROM files_fts WHERE rowid = file_id;") |
-            Should -Be 1
+            Should -Be 2
         (Search-Query -Database $script:database -Query "originalmarker").File.Path |
             Should -Be $file.Path
 
         $file.HasContent = $false
         $script:database.Save($file)
-        (Invoke-TestSql "SELECT count(*) FROM files_fts;") | Should -Be 0
+        (Invoke-TestSql "SELECT count(*) FROM files_fts;") | Should -Be 2
+        (Search-Query -Database $script:database -Query "originalmarker" -SearchMode Content) |
+            Should -BeNullOrEmpty
+        (Search-Query -Database $script:database -Query "indexed" -SearchMode FileName).File.Path |
+            Should -Be $file.Path
         $script:database.Get($file.Path).HasContent | Should -BeFalse
+    }
+
+    It "searches filenames, content, or both and indexes metadata-only filenames" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot "filenameonlymarker.txt")
+        $file.Content = "bodyonlymarker"
+        $script:database.Save($file)
+
+        $metadataOnly = New-TestDatei -Path (Join-Path $script:testRoot "metadataonlymarker.bin")
+        $metadataOnly.HasContent = $false
+        $metadataOnly.Content = $null
+        $script:database.Save($metadataOnly)
+
+        $filenameResults = Search-Query -Database $script:database `
+            -Query "filenameonlymarker" -SearchMode FileName
+        $filenameResults.File.Path | Should -Be $file.Path
+        $filenameResults.Snippet | Should -Match "\[filenameonlymarker\]"
+        (Search-Query -Database $script:database -Query "filenameonlymarker").File.Path |
+            Should -Be $file.Path
+        (Search-Query -Database $script:database -Query "filenameonlymarker" `
+            -SearchMode Content) | Should -BeNullOrEmpty
+        (Search-Query -Database $script:database -Query "bodyonlymarker" `
+            -SearchMode FileName) | Should -BeNullOrEmpty
+        (Search-Query -Database $script:database -Query "bodyonlymarker" `
+            -SearchMode Content).File.Path | Should -Be $file.Path
+        (Search-Query -Database $script:database -Query "metadataonlymarker" `
+            -SearchMode FileName).File.Path | Should -Be $metadataOnly.Path
+        (Search-Query -Database $script:database -Query "bodyonlymarker" `
+            -SearchMode Both).File.Path | Should -Be $file.Path
     }
 
     It "indexes full text and returns a snippet and positive relevance score" {
@@ -378,31 +411,12 @@ END;
         $results[0].File.Path | Should -Be $file.Path
     }
 
-    It "migrates independent FTS rowids once and preserves searchable content" {
+    It "keeps the current FTS schema and indexed data when reopened" {
         $metadataOnly = New-TestDatei -Path (Join-Path $script:testRoot "metadata.txt")
         $metadataOnly.HasContent = $false
         $first = New-TestDatei -Path (Join-Path $script:testRoot "first.txt")
         $second = New-TestDatei -Path (Join-Path $script:testRoot "second.txt")
         $script:database.SaveBatch([Datei[]]@($metadataOnly, $first, $second))
-        [void](Invoke-TestSql @"
-DELETE FROM files_fts;
-INSERT INTO files_fts(rowid, file_id, content) VALUES
-    (1, 3, 'secondmarker'), (3, 2, 'firstmarker');
-PRAGMA user_version = 0;
-"@)
-        $script:database.Dispose()
-        $script:database = Initialize-Database `
-            -DatabasePath $script:databasePath `
-            -AssemblyPath $script:assemblyPath
-
-        (Invoke-TestSql "SELECT count(*) FROM files_fts WHERE rowid != file_id;") |
-            Should -Be 0
-        (Invoke-TestSql "PRAGMA user_version;") | Should -Be 1
-        (Search-Query -Database $script:database -Query "firstmarker").File.Path |
-            Should -Be $first.Path
-        (Search-Query -Database $script:database -Query "secondmarker").File.Path |
-            Should -Be $second.Path
-
         [void](Invoke-TestSql @"
 CREATE TRIGGER guard_fts_migration BEFORE INSERT ON files_fts_data
 BEGIN
@@ -413,40 +427,49 @@ END;
         $script:database = Initialize-Database `
             -DatabasePath $script:databasePath `
             -AssemblyPath $script:assemblyPath
+
+        (Invoke-TestSql "SELECT count(*) FROM pragma_table_info('files_fts') WHERE name = 'filename';") |
+            Should -Be 1
+        (Invoke-TestSql "SELECT count(*) FROM files_fts WHERE rowid != file_id;") |
+            Should -Be 0
+        (Search-Query -Database $script:database -Query "metadata" -SearchMode FileName).File.Path |
+            Should -Be $metadataOnly.Path
+        (Search-Query -Database $script:database -Query "originalmarker").Count |
+            Should -Be 2
         (Invoke-TestSql "SELECT count(*) FROM sqlite_master WHERE name = 'guard_fts_migration';") |
             Should -Be 1
         [void](Invoke-TestSql "DROP TRIGGER guard_fts_migration;")
 
+        $first.Content = "updatedmarker"
         $script:database.Save($first)
-        (Search-Query -Database $script:database -Query "firstmarker").Count | Should -Be 0
+        (Search-Query -Database $script:database -Query "originalmarker").File.Path |
+            Should -Be $second.Path
+        (Search-Query -Database $script:database -Query "updatedmarker").File.Path |
+            Should -Be $first.Path
         $script:database.Remove($second.Path)
-        (Search-Query -Database $script:database -Query "secondmarker").Count | Should -Be 0
-        (Invoke-TestSql "SELECT count(*) FROM files_fts;") | Should -Be 1
+        (Search-Query -Database $script:database -Query "originalmarker").Count | Should -Be 0
+        (Invoke-TestSql "SELECT count(*) FROM files_fts;") | Should -Be 2
     }
 
-    It "rolls back an unsuccessful FTS rowid migration" {
-        $file = New-TestDatei -Path (Join-Path $script:testRoot "duplicate.txt")
-        $script:database.Save($file)
+    It "rejects an FTS schema without the filename column" {
         [void](Invoke-TestSql @"
-INSERT INTO files_fts(rowid, file_id, content) VALUES (99, 1, 'duplicatemarker');
-PRAGMA user_version = 0;
+DROP TABLE files_fts;
+CREATE VIRTUAL TABLE files_fts USING fts5(
+    file_id UNINDEXED,
+    content,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
 "@)
 
+        $script:database.Dispose()
         {
-            $reopened = Initialize-Database `
+            Initialize-Database `
                 -DatabasePath $script:databasePath `
                 -AssemblyPath $script:assemblyPath
-            $reopened.Dispose()
-        } | Should -Throw
-
-        (Invoke-TestSql "PRAGMA user_version;") | Should -Be 0
-        (Invoke-TestSql "SELECT count(*) FROM files_fts;") | Should -Be 2
-        (Invoke-TestSql "SELECT count(*) FROM sqlite_master WHERE name = 'files_fts_rowid';") |
-            Should -Be 0
+        } | Should -Throw "*unsupported FTS schema*"
     }
 
-    It "migrates the legacy full-path schema without losing searchable content" {
-        $path = Join-Path $script:testRoot "legacy.txt"
+    It "rejects the legacy full-path schema with an actionable error" {
         $connectionProperty = [SqliteDateiRepository].GetProperty(
             "_connection",
             [System.Reflection.BindingFlags]"Instance,Public,NonPublic"
@@ -456,76 +479,21 @@ PRAGMA user_version = 0;
         $command.CommandText = @"
 DROP TABLE files_fts;
 DROP TABLE files_metadata;
-PRAGMA user_version = 0;
 CREATE TABLE files_metadata (
     id INTEGER PRIMARY KEY,
     path_key TEXT NOT NULL UNIQUE,
-    path TEXT NOT NULL,
-    filename TEXT NOT NULL,
-    extension TEXT NOT NULL,
-    size_bytes INTEGER NOT NULL,
-    creation_time_utc_ticks INTEGER NOT NULL,
-    last_write_time_utc_ticks INTEGER NOT NULL,
-    indexed_at_utc_ticks INTEGER NOT NULL,
-    has_content INTEGER NOT NULL,
-    is_cloud_only INTEGER NOT NULL
-);
-CREATE VIRTUAL TABLE files_fts USING fts5(
-    path_key UNINDEXED,
-    content,
-    tokenize = 'unicode61 remove_diacritics 2'
+    path TEXT NOT NULL
 );
 "@
         [void]$command.ExecuteNonQuery()
         $command.Dispose()
 
-        $legacy = New-TestDatei -Path $path
-        $legacy.Content = "legacysearchmarker"
-        $legacyCommand = $connection.CreateCommand()
-        $legacyCommand.CommandText = @"
-INSERT INTO files_metadata (
-    id, path_key, path, filename, extension, size_bytes, creation_time_utc_ticks,
-    last_write_time_utc_ticks, indexed_at_utc_ticks, has_content, is_cloud_only
-) VALUES (
-    23, 'LEGACYKEY', `$path, 'legacy.txt', '.txt', 128, `$creationTicks,
-    `$writeTicks, `$indexedTicks, 1, 0
-);
-INSERT INTO files_fts(path_key, content) VALUES ('LEGACYKEY', 'legacysearchmarker');
-"@
-        [void]$legacyCommand.Parameters.AddWithValue('$path', $path)
-        [void]$legacyCommand.Parameters.AddWithValue('$creationTicks', $legacy.CreationTimeUtc.Ticks)
-        [void]$legacyCommand.Parameters.AddWithValue('$writeTicks', $legacy.LastWriteTimeUtc.Ticks)
-        [void]$legacyCommand.Parameters.AddWithValue('$indexedTicks', $legacy.IndexedAtUtc.Ticks)
-        [void]$legacyCommand.ExecuteNonQuery()
-        $legacyCommand.Dispose()
-
         $script:database.Dispose()
-        $script:database = Initialize-Database `
-            -DatabasePath $script:databasePath `
-            -AssemblyPath $script:assemblyPath
-
-        $stored = $script:database.Get($path)
-        $stored.Path | Should -Be $path
-        $stored.Name | Should -Be "legacy.txt"
-        $stored.Extension | Should -Be ".txt"
-        (Search-Query -Database $script:database -Query "legacysearchmarker").File.Path |
-            Should -Be $path
-
-        $schemaCommand = $connectionProperty.GetValue($script:database).CreateCommand()
-        $schemaCommand.CommandText = "PRAGMA table_info(files_metadata);"
-        $schemaReader = $schemaCommand.ExecuteReader()
-        $columnNames = [System.Collections.Generic.List[string]]::new()
-        while ($schemaReader.Read()) {
-            $columnNames.Add([string]$schemaReader["name"])
-        }
-        $schemaReader.Dispose()
-        $schemaCommand.Dispose()
-        $columnNames | Should -Contain "directory_path"
-        $columnNames | Should -Not -Contain "path"
-        $columnNames | Should -Not -Contain "path_key"
-        (Invoke-TestSql "SELECT rowid FROM files_fts;") | Should -Be 23
-        $script:database.Remove($path)
-        (Invoke-TestSql "SELECT count(*) FROM files_fts;") | Should -Be 0
+        {
+            Initialize-Database `
+                -DatabasePath $script:databasePath `
+                -AssemblyPath $script:assemblyPath
+        } | Should -Throw "*unsupported legacy schema*"
     }
 
     It "validates the search limit" {
