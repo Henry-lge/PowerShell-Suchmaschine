@@ -66,7 +66,7 @@ try {
     # ist; Dispose() im finally-Block schließt sie.
     if (-not [string]::IsNullOrWhiteSpace($Query)) {
         $results = @(
-            Search-Query -Database $database -Query $Query `
+            Search-Query -Database $crawler.Repository -Query $Query `
                 -Limit $SearchLimit -SearchMode $SearchMode
         )
         if ($results.Count -eq 0) {
