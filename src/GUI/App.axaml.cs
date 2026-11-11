@@ -4,7 +4,7 @@ using Avalonia.Markup.Xaml;
 using System;
 using System.Diagnostics;
 using System.IO;
-using System.Text.RegularExpressions; // <--- NEU: Behebt den Regex CS0103 Fehler
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 namespace FileSearcherApp
@@ -26,7 +26,6 @@ namespace FileSearcherApp
 
                 try
                 {
-                    // <--- GEÄNDERT: splashScreen als Parameter übergeben (Behebt CS7036)
                     await Task.Run(() => StartCrawlerScan(splashScreen));
                 }
                 catch (Exception ex)
@@ -44,18 +43,27 @@ namespace FileSearcherApp
             base.OnFrameworkInitializationCompleted();
         }
 
-        // <--- GEÄNDERT: Parameter splashScreen hinzugefügt
         private void StartCrawlerScan(SplashScreenWindow splashScreen)
         {
             try
             {
                 string baseDir = AppDomain.CurrentDomain.BaseDirectory;
                 
-                // <--- GEÄNDERT: Saubere Pfadberechnung bis zur Projekt-Root
-                string projectRoot = Path.GetFullPath(Path.Combine(baseDir, "../../../../"));
+                // <--- GEÄNDERT: Statt fixer Relativsprünge wird der Projektordner dynamisch gesucht (vermeidet src\src\)
+                string? currentDir = baseDir;
+                while (currentDir != null && !File.Exists(Path.Combine(currentDir, "PowerShell-Suchmaschine.sln")) && Path.GetFileName(currentDir) != "PowerShell-Suchmaschine")
+                {
+                    var parent = Directory.GetParent(currentDir);
+                    if (parent == null) break;
+                    currentDir = parent.FullName;
+                }
+
+                // Falls nicht gefunden, Fallback auf 3 Ebenen hoch (bin/Debug/net8.0/ -> GUI)
+                string projectRoot = currentDir ?? Path.GetFullPath(Path.Combine(baseDir, "../../../"));
+                
+                // Pfad zum Crawler-Modul zusammenbauen
                 string crawlerModulePath = Path.Combine(projectRoot, "src", "Crawler", "Crawler.psm1");
 
-                // <--- NEU: Sicherheitsprüfung gegen falsche Ordnerpfade
                 if (!File.Exists(crawlerModulePath))
                 {
                     Console.WriteLine($"[FEHLER] Modul nicht gefunden unter: {crawlerModulePath}");
@@ -104,8 +112,6 @@ namespace FileSearcherApp
                     else if (e.Data.StartsWith("Read:"))
                     {
                         var match = Regex.Match(e.Data, @"Read:\s*(\d+)\s*of\s*(\d+)");
-                        
-                        // <--- GEÄNDERT: Behebt CS0165 (done/total Variablen explizit im out-Param deklariert)
                         if (match.Success &&
                             double.TryParse(match.Groups[1].Value, out double done) &&
                             double.TryParse(match.Groups[2].Value, out double total))
