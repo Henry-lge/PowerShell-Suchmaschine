@@ -11,6 +11,7 @@ Eine ausführliche Erklärung der Klassen, Reader und Abläufe steht in der
 ## Voraussetzungen
 
 - PowerShell 7.2 oder neuer
+- Für die GUI Tests: C# Extension C# DevKit von VSCode
 - .Net 10.0  Download: https://dotnet.microsoft.com/en-us/download/dotnet/10.0
 - Für SQLite: Internetzugriff beim erstmaligen Einrichten der SQLite-Laufzeit
   (NuGet-Pakete werden heruntergeladen)
