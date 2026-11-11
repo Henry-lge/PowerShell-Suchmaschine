@@ -4,3 +4,6 @@
 .tmp
 .vscode/*
 .DS_Store
+
+/src/GUI/obj
+/src/GUI/bin
