@@ -403,17 +403,8 @@ WHERE id IN (
     [string[]] GetPathsUnder([string]$folderPath) {
         $this.EnsureOpen()
         $folder = [PathUtil]::Normalize($folderPath)
-        $prefix = $folder
-        if (-not [System.IO.Path]::EndsInDirectorySeparator($prefix)) {
-            $prefix += [System.IO.Path]::DirectorySeparatorChar
-        }
         $paths = [System.Collections.Generic.List[string]]::new()
-        $command = $this.NewCommand(
-            "SELECT directory_path, filename, extension FROM files_metadata " +
-            "WHERE directory_path = `$folderParameter " +
-            "OR directory_path IS NOT NULL;"
-        )
-        [void]$command.Parameters.AddWithValue('$folderParameter', $folder)
+        $command = $this.NewPathsUnderCommand($folder)
 
         try {
             $reader = $command.ExecuteReader()
@@ -438,6 +429,44 @@ WHERE id IN (
         }
 
         return $paths.ToArray()
+    }
+
+    # Der Aufrufer uebergibt einen normalisierten Ordner und prueft die Kandidaten
+    # weiterhin mit PathUtil.IsSameOrUnder(). NOCASE erlaubt indexierte LIKE-Suchen.
+    hidden [object] NewPathsUnderCommand([string]$folder) {
+        $prefix = $folder
+        if (-not [System.IO.Path]::EndsInDirectorySeparator($prefix)) {
+            $prefix += [System.IO.Path]::DirectorySeparatorChar
+        }
+
+        # SQLite faltet nur ASCII. Bei Unicode auf case-insensitiven Plattformen
+        # endet der sichere Suchpraefix daher vor dem ersten Nicht-ASCII-Zeichen.
+        $prefixOnly = $false
+        if ([PathUtil]::GetComparison() -eq [System.StringComparison]::OrdinalIgnoreCase) {
+            for ($index = 0; $index -lt $prefix.Length; $index++) {
+                if ([int]$prefix[$index] -gt 127) {
+                    $prefix = $prefix.Substring(0, $index)
+                    $prefixOnly = $true
+                    break
+                }
+            }
+        }
+
+        $pattern = $prefix.Replace('\', '\\').Replace('%', '\%').Replace('_', '\_') + '%'
+        $select = "SELECT directory_path, filename, extension FROM files_metadata "
+        $sql = $select + "WHERE directory_path LIKE `$prefixParameter ESCAPE '\'"
+        if (-not $prefixOnly) {
+            # Getrennte Zweige vermeiden einen OR-bedingten Index-Vollscan.
+            # Bei Wurzelordnern umfasst der LIKE-Zweig bereits direkte Dateien.
+            $sql = $select + "WHERE directory_path = `$folderParameter COLLATE NOCASE " +
+                "UNION ALL " + $sql + " AND directory_path <> `$folderParameter COLLATE NOCASE"
+        }
+        $command = $this.NewCommand($sql + ';')
+        if (-not $prefixOnly) {
+            [void]$command.Parameters.AddWithValue('$folderParameter', $folder)
+        }
+        [void]$command.Parameters.AddWithValue('$prefixParameter', $pattern)
+        return $command
     }
 
     [object[]] Search(
