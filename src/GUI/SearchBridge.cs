@@ -84,8 +84,21 @@ namespace FileSearcherApp
             using (proc)
             using (ct.Register(() => { try { proc.Kill(true); } catch { } }))
             {
-                var request = JsonSerializer.Serialize(
-                    new { query, limit, extension, prefix = true, mode }, Json);
+                var normalizedMode = mode.Trim().ToLowerInvariant();
+
+if (normalizedMode is not ("filename" or "content" or "both"))
+    throw new SearchException($"Ungültiger Suchmodus: {mode}");
+
+var request = JsonSerializer.Serialize(
+    new
+    {
+        query,
+        limit,
+        extension,
+        prefix = true,
+        mode = normalizedMode
+    },
+    Json);
                 await proc.StandardInput.WriteAsync(request);
                 proc.StandardInput.Close();
 

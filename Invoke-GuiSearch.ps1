@@ -16,13 +16,38 @@ $ProgressPreference = 'SilentlyContinue'
 $database = $null
 
 try {
-    if (-not $PSBoundParameters.ContainsKey('Query')) {
-        $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
-        $Query = [string]$request.query
-        if ($null -ne $request.limit) { $Limit = [int]$request.limit }
-        if ($null -ne $request.extension) { $Extension = [string]$request.extension }
-        if ($null -ne $request.searchMode) { $SearchMode = [string]$request.searchMode }
+    
+if (-not $PSBoundParameters.ContainsKey('Query')) {
+    $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+
+    $Query = [string]$request.query
+
+    if ($null -ne $request.limit) {
+        $Limit = [int]$request.limit
     }
+
+    if ($null -ne $request.extension) {
+        $Extension = [string]$request.extension
+    }
+
+    $rawMode = $request.mode
+
+    if ([string]::IsNullOrWhiteSpace([string]$rawMode)) {
+        $rawMode = $request.searchMode
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$rawMode)) {
+        switch ([string]$rawMode.Trim().ToLowerInvariant()) {
+            'filename' { $SearchMode = 'FileName' }
+            'content'  { $SearchMode = 'Content' }
+            'both'     { $SearchMode = 'Both' }
+            default {
+                throw "Ungültiger Suchmodus: $rawMode"
+            }
+        }
+    }
+}
+
     if ($Limit -lt 1 -or $Limit -gt 1000) {
         throw 'Limit muss zwischen 1 und 1000 liegen.'
     }
@@ -45,7 +70,11 @@ try {
                     lastWriteUtc = $_.File.LastWriteTimeUtc.ToString('o')
                     snippet = $_.Snippet
                     score = [double]$_.Score
-                    matchedIn = 'Inhalt'
+                    matchedIn = switch ($SearchMode) {
+                    'FileName' { 'Dateiname' }
+                    'Content'  { 'Inhalt' }
+                    'Both'     { 'Dateiname + Inhalt' }
+}
                 }
             })
     }

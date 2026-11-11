@@ -1,7 +1,8 @@
+using System;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
-using System.Threading.Tasks;
 
 namespace FileSearcherApp
 {
@@ -12,29 +13,58 @@ namespace FileSearcherApp
             AvaloniaXamlLoader.Load(this);
         }
 
-        public override async void OnFrameworkInitializationCompleted()
+        public override void OnFrameworkInitializationCompleted()
         {
-            if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+            if (ApplicationLifetime is
+                IClassicDesktopStyleApplicationLifetime desktop)
             {
-                // 1. Splashscreen erstellen und anzeigen
                 var splashScreen = new SplashScreenWindow();
+
                 desktop.MainWindow = splashScreen;
                 splashScreen.Show();
-                // Hier könnte man dann vielleicht den Crawlerscan durchführen
 
-                // 2. Im Hintergrund Aufgaben erledigen (z.B. PowerShell vorbereiten, Daten laden)
-                await Task.Delay(4000); // Simuliert 4 Sekunden Ladezeit
-
-                // 3. Echtes Hauptfenster öffnen
-                var mainWindow = new MainWindow();
-                desktop.MainWindow = mainWindow;
-                mainWindow.Show();
-
-                // 4. Splashscreen schließen
-                splashScreen.Close();
+                _ = InitializeApplicationAsync(desktop, splashScreen);
             }
 
             base.OnFrameworkInitializationCompleted();
+        }
+
+        private async Task InitializeApplicationAsync(
+            IClassicDesktopStyleApplicationLifetime desktop,
+            SplashScreenWindow splashScreen)
+        {
+            try
+            {
+
+                await Task.Delay(4000); // TemporäreSimulation
+
+                var mainWindow = new MainWindow();
+
+                desktop.MainWindow = mainWindow;
+                mainWindow.Show();
+
+                splashScreen.Close();
+            }
+            catch (Exception ex)
+            {
+                splashScreen.Close();
+
+                var errorWindow = new Avalonia.Controls.Window
+                {
+                    Title = "Startfehler",
+                    Width = 450,
+                    Height = 180,
+                    Content = new Avalonia.Controls.TextBlock
+                    {
+                        Text = $"Die Anwendung konnte nicht gestartet werden:\n{ex.Message}",
+                        Margin = new Avalonia.Thickness(20),
+                        TextWrapping = Avalonia.Media.TextWrapping.Wrap
+                    }
+                };
+
+                desktop.MainWindow = errorWindow;
+                errorWindow.Show();
+            }
         }
     }
 }
