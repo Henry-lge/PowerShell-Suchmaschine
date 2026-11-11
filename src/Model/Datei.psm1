@@ -1,4 +1,4 @@
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # Ergebnis des Vergleichs einer Datei mit dem im Repository gespeicherten Stand.
@@ -39,6 +39,12 @@ class Datei {
     # Scan liest ihn, sobald die Datei heruntergeladen ist.
     [bool]$IsCloudOnly
 
+    # Fehlermeldung, wenn der Reader den Inhalt nicht lesen konnte (z. B. eine
+    # beschädigte Datei). Die Datei wird dann ohne Inhalt gespeichert. Das Feld
+    # gilt nur für den aktuellen Scan und wird nicht in der Datenbank
+    # gespeichert.
+    [string]$ContentError
+
     [DateiStatus]$Status = [DateiStatus]::New
 
 
@@ -70,6 +76,7 @@ class Datei {
         $copy.IndexedAtUtc = $this.IndexedAtUtc
         $copy.HasContent = $this.HasContent
         $copy.IsCloudOnly = $this.IsCloudOnly
+        $copy.ContentError = $this.ContentError
         $copy.Status = $this.Status
 
         return $copy
@@ -95,6 +102,10 @@ class Datei {
             $output += "Content: not read (cloud placeholder)"
         }
 
+        if (-not [string]::IsNullOrEmpty($this.ContentError)) {
+            $output += "Content error: $($this.ContentError)"
+        }
+
         $output += ""
         return $output
     }
@@ -112,6 +123,7 @@ class Datei {
             Content          = $this.Content
             HasContent       = $this.HasContent
             IsCloudOnly      = $this.IsCloudOnly
+            ContentError     = $this.ContentError
             Status           = $this.Status.ToString()
         }
     }

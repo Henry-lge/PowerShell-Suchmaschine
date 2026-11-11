@@ -1,7 +1,7 @@
 using module "../ContentReader.psm1"
 using module "../Shared/CompoundFile.psm1"
 
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # =============================================================================
@@ -19,6 +19,7 @@ using module "../Shared/CompoundFile.psm1"
 #
 # Auch andere Programme verwenden ".msg" (z. B. Tcl-Sprachkataloge); Dateien
 # ohne die Signatur einer Verbunddatei liefern einen leeren Text.
+[NoRunspaceAffinity()]
 class MsgContentReader : ContentReader {
 
     # Eigenschafts-IDs (hexadezimal) der Werte, die ausgelesen werden.

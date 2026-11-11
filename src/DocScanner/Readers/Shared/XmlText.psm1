@@ -1,4 +1,4 @@
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # =============================================================================
@@ -9,6 +9,7 @@
 # sich nur in den Elementnamen, deshalb wird ein einziger Extraktor pro Format
 # mit Regeln eingestellt. Alle Namen sind lokale Namen ohne Präfix ("t",
 # nicht "w:t").
+[NoRunspaceAffinity()]
 class XmlTextRules {
 
     # Nur Text innerhalb dieser Elemente wird verwendet. Leer: alle Textknoten.
@@ -33,6 +34,7 @@ class XmlTextRules {
 }
 
 
+[NoRunspaceAffinity()]
 class XmlText {
 
     # Liest den XML-Stream bis zum Ende und gibt den Text zurück. Zeilen

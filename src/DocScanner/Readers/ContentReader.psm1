@@ -1,4 +1,4 @@
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # =============================================================================
@@ -17,11 +17,14 @@
 # Einen ganz neuen Dateityp hinzufügen:
 #   1. Ein Modul in einem passenden Unterordner anlegen, von [ContentReader]
 #      erben und im Konstruktor $this.Extensions setzen.
+#      Die Klasse braucht wie alle Reader das Attribut [NoRunspaceAffinity()],
+#      weil der Crawler Reader in mehreren Workern gleichzeitig verwendet.
 #   2. Es in DocScanner.psm1 mit "using module" laden und in
 #      RegisterDefaultReaders() registrieren.
 #
 # PowerShell kennt keine abstrakten Klassen, deshalb werfen die Methoden der
 # Basisklasse stattdessen eine Ausnahme.
+[NoRunspaceAffinity()]
 class ContentReader {
 
     # Endungen in Kleinbuchstaben mit Punkt, z. B. ".pdf".
@@ -50,6 +53,14 @@ class ContentReader {
         throw [System.NotImplementedException]::new(
             "ReadContent() is not implemented in $($this.GetName())."
         )
+    }
+
+    # Optional: Wird vor dem Lesen eines Pakets mit allen Dateien dieses
+    # Readers aufgerufen, die danach einzeln über ReadContent() gelesen
+    # werden. Reader, deren Arbeit pro Aufruf teuer startet (z. B. ein
+    # externes Tool), können hier alle Dateien auf einmal verarbeiten und
+    # die Ergebnisse für ReadContent() vorhalten. Standardmäßig nichts.
+    [void] Prepare([System.IO.FileInfo[]]$files) {
     }
 
 

@@ -1,6 +1,6 @@
 using module "../ContentReader.psm1"
 
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # =============================================================================
@@ -24,6 +24,7 @@ using module "../ContentReader.psm1"
 # Die Nachricht wird zuerst als Latin-1 dekodiert, das jedes Byte auf genau
 # ein Zeichen abbildet. Jeder Textteil wird wieder in Bytes umgewandelt und
 # mit dem Zeichensatz dekodiert, den er angibt.
+[NoRunspaceAffinity()]
 class EmlContentReader : ContentReader {
 
     # Tiefer verschachtelte Multiparts werden ignoriert (Schutz vor defekten
@@ -405,6 +406,7 @@ class EmlContentReader : ContentReader {
 
 
 # Gesammelte Teile einer Mail beim Durchlaufen des MIME-Baums.
+[NoRunspaceAffinity()]
 class MailParts {
     [System.Collections.Generic.List[string]]$PlainTexts = [System.Collections.Generic.List[string]]::new()
     [System.Collections.Generic.List[string]]$HtmlTexts = [System.Collections.Generic.List[string]]::new()

@@ -1,7 +1,7 @@
 using module "../ContentReader.psm1"
 using module "../Shared/CompoundFile.psm1"
 
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # =============================================================================
@@ -27,6 +27,7 @@ using module "../Shared/CompoundFile.psm1"
 # Tabellenzeile mit den nicht leeren Zellen, getrennt durch Tabulatoren.
 # Verschlüsselte Mappen (Record FILEPASS) und Dateien von Excel 5/95 liefern
 # keinen Text.
+[NoRunspaceAffinity()]
 class LegacyExcelContentReader : ContentReader {
 
     LegacyExcelContentReader() {
@@ -317,6 +318,7 @@ class LegacyExcelContentReader : ContentReader {
 # Liest BIFF8-Texte, die über CONTINUE-Records hinweg weitergehen können. Wird
 # der Zeichenteil eines Textes geteilt, beginnt der nächste Record mit einem
 # neuen Flag-Byte, das angibt, ob der Rest 8-Bit oder UTF-16 ist.
+[NoRunspaceAffinity()]
 class BiffStringReader {
 
     hidden [System.Collections.Generic.List[byte[]]]$_segments

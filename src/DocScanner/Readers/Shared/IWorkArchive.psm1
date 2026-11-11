@@ -1,4 +1,4 @@
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # =============================================================================
@@ -22,6 +22,7 @@
 # Ein Feld einer Protobuf-Nachricht. Felder mit Längenangabe (Texte,
 # verschachtelte Nachrichten) merken sich ihre Position im Puffer, statt
 # kopiert zu werden.
+[NoRunspaceAffinity()]
 class ProtoField {
     [int]$Number
     [int]$WireType
@@ -31,6 +32,7 @@ class ProtoField {
 }
 
 
+[NoRunspaceAffinity()]
 class ProtoReader {
 
     # Liest einen Varint (7 Bits pro Byte, oberstes Bit = es folgen weitere
@@ -105,6 +107,7 @@ class ProtoReader {
 }
 
 
+[NoRunspaceAffinity()]
 class Snappy {
 
     # Entpackt einen rohen Snappy-Block (ohne Rahmenformat).
@@ -194,6 +197,7 @@ class Snappy {
 
 
 # Eine Nachricht innerhalb einer .iwa-Datei.
+[NoRunspaceAffinity()]
 class IWorkMessage {
     [int]$Type
     [int]$Offset
@@ -201,6 +205,7 @@ class IWorkMessage {
 }
 
 
+[NoRunspaceAffinity()]
 class IWorkArchive {
 
     # Entpackt alle Blöcke einer .iwa-Datei in einen Puffer.
