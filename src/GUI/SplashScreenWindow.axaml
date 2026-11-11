@@ -1,0 +1,26 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="FileSearcherApp.SplashScreenWindow"
+        Title="SplashScreen" 
+        Width="605" Height="210"
+        WindowStartupLocation="CenterScreen"
+        SystemDecorations="None"
+        Background="#0c3835">
+    
+   <Grid VerticalAlignment="Center" HorizontalAlignment="Center" RowDefinitions="Auto,Auto">
+        <!-- Logo / Titel mit korrektem avares:// Pfad -->
+        <Image Grid.Row="0"        
+           Source="avares://FileSearcherApp/GUIAssets/logo.png"          
+           Width="605" Height="180"
+           Margin="0,0,0,10"                    
+           VerticalAlignment="Top"/>
+
+        <!-- Ein kleiner Hinweistext oder Lade-Indikator -->
+        <TextBlock Grid.Row="1" 
+                   Text="Starte PowerShell-Umgebung..." 
+                   FontSize="12" 
+                   Foreground="#80A09F" 
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Bottom"/>
+    </Grid>
+</Window>
