@@ -5,6 +5,7 @@
         Width="605" Height="210"
         WindowStartupLocation="CenterScreen"
         SystemDecorations="None"
+         Icon="avares://FileSearcherApp/GUIAssets/icon.png"
         Background="#0c3835">
     
    <Grid VerticalAlignment="Center" HorizontalAlignment="Center" RowDefinitions="Auto,Auto">
