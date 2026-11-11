@@ -1,6 +1,6 @@
 using module "../ContentReader.psm1"
 
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # =============================================================================
@@ -9,6 +9,7 @@ using module "../ContentReader.psm1"
 
 # Liest Dateien, die bereits als Text gespeichert sind. Auszeichnungssprachen
 # (HTML, XML, JSON) werden unverändert zurückgegeben.
+[NoRunspaceAffinity()]
 class TextContentReader : ContentReader {
 
     # Wirft bei ungültigen Bytefolgen eine Ausnahme, statt "?" einzufügen,

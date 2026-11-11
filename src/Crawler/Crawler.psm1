@@ -3,9 +3,10 @@ using module "../Common/CloudFile.psm1"
 using module "../Model/Datei.psm1"
 using module "../Model/ScanError.psm1"
 using module "../Persistence/DateiRepository.psm1"
+using module "../Persistence/SqliteDateiRepository.psm1"
 using module "../DocScanner/DocScanner.psm1"
 
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # =============================================================================
@@ -25,11 +26,175 @@ $script:DefaultExcludedFolderNames = @(
     ".idea", ".vs"
 )
 
+# Ein Kern bleibt für den Hauptthread (Ordner, Datenbank) frei. Mehr als 4
+# Worker brachten in Messungen nichts mehr: PowerShell-Code muss in jedem
+# Worker neu "warmlaufen", und viele CPUs haben nur wenige schnelle Kerne.
+$script:DefaultMaxParallelism = [Math]::Max(1, [Math]::Min(4, [Environment]::ProcessorCount - 1))
+
+# Standard-Datenbank: data/index.sqlite3 im Projektordner, unabhängig davon,
+# aus welchem Ordner das Skript gestartet wird.
+$script:DefaultDatabasePath = [System.IO.Path]::GetFullPath(
+    (Join-Path $PSScriptRoot "../../data/index.sqlite3")
+)
+
+# Pfad des DocScanner-Moduls, das jeder Worker selbst lädt.
+$script:DocScannerModulePath = [System.IO.Path]::GetFullPath(
+    (Join-Path $PSScriptRoot "../DocScanner/DocScanner.psm1")
+)
+
+# Skript, das in jedem Worker-Runspace läuft. Jeder Worker lädt das Modul
+# einmal, erzeugt seinen eigenen DocScanner und verwendet ihn für alle
+# weiteren Pakete wieder. Zurück kommen nur einfache Daten (Index, Text,
+# Fehlermeldung), damit der Hauptthread nichts mit den Workern teilt.
+#
+# Alle Klassen des DocScanners tragen [NoRunspaceAffinity()] (PowerShell
+# 7.4+). Ohne das Attribut würde PowerShell Methoden und statische Felder
+# einer Klasse in dem Runspace ausführen, der sie zuerst geladen hat, also im
+# Hauptthread. Der wartet aber gerade auf die Worker: Der Scan hinge.
+$script:WorkerScript = @'
+param([string]$ModulePath, [long]$MaxContentSizeBytes, [int]$Start, [string[]]$Paths)
+
+if ($null -eq $global:CrawlerWorkerDocScanner) {
+    # Erst sammeln, dann auswählen: Select-Object -First direkt hinter
+    # Import-Module würde in einem Worker die ganze Pipeline anhalten.
+    $modules = @(Import-Module -Name $ModulePath -PassThru -ErrorAction Stop)
+    $module = @($modules | Where-Object Name -eq "DocScanner")[0]
+
+    # Im Modul ausgeführt, weil der Typ [DocScanner] nur dort bekannt ist.
+    $global:CrawlerWorkerDocScanner = & $module { [DocScanner]::new() }
+}
+
+$scanner = $global:CrawlerWorkerDocScanner
+$scanner.MaxContentSizeBytes = $MaxContentSizeBytes
+
+$files = [System.IO.FileInfo[]]::new($Paths.Length)
+
+for ($i = 0; $i -lt $Paths.Length; $i++) {
+    $files[$i] = [System.IO.FileInfo]::new($Paths[$i])
+}
+
+# Reader können das ganze Paket auf einmal vorbereiten (z. B. Texterkennung
+# für alle Bilder in einem Aufruf).
+$scanner.Prepare($files)
+
+for ($i = 0; $i -lt $Paths.Length; $i++) {
+    try {
+        $text = $scanner.ReadContent($files[$i])
+        [pscustomobject]@{ Index = $Start + $i; Content = $text; Error = $null }
+    }
+    catch {
+        [pscustomobject]@{ Index = $Start + $i; Content = $null; Error = $_.Exception.Message }
+    }
+}
+'@
+
+
+# Pfad des SQLite-Moduls, das der Schreib-Thread selbst lädt.
+$script:SqliteModulePath = [System.IO.Path]::GetFullPath(
+    (Join-Path $PSScriptRoot "../Persistence/SqliteDateiRepository.psm1")
+)
+
+# Skript des Schreib-Threads. Es speichert die Pakete aus der Warteschlange
+# mit SaveBatch, während der Hauptthread weiter Ordner durchläuft und Inhalte
+# liest.
+#
+# Die Verbindung kommt aus dem Verbindungspool der Datenbank (DatabasePool):
+# Der Pool ist eine C#-Klasse und darf zwischen Runspaces geteilt werden. Das
+# Repository dagegen ist eine PowerShell-Klasse und gehört zu dem Runspace,
+# der es erzeugt; deshalb baut der Schreib-Thread sein eigenes aus einer
+# geliehenen Verbindung. Würde er das Repository des Hauptthreads benutzen,
+# liefen seine Aufrufe über den Hauptthread und hingen, sobald dieser auf die
+# Warteschlange wartet. Dank WAL-Modus kann der Hauptthread lesen (Get),
+# während hier geschrieben wird.
+#
+# Der Runspace bleibt über mehrere Scans erhalten. Modul und Repository
+# werden nur beim ersten Mal geladen bzw. erzeugt und in
+# $global:CrawlerWriterRepository gemerkt; Dispose() des Crawlers gibt die
+# Verbindung an den Pool zurück.
+#
+# Zurück kommen nur Pakete, die nicht gespeichert wurden. Retry = $true heißt,
+# dass der Schreib-Thread keine Verbindung bekam; der Hauptthread speichert
+# das Paket dann selbst.
+$script:WriterScript = @'
+param([string]$ModulePath, $Pool, [int]$BorrowTimeoutMilliseconds, $Queue, $Results)
+
+$startError = $null
+
+if ($null -eq $global:CrawlerWriterRepository) {
+    $lease = $null
+
+    try {
+        # Erst sammeln, dann auswählen (siehe Worker-Skript).
+        $modules = @(Import-Module -Name $ModulePath -PassThru -ErrorAction Stop)
+        $module = @($modules | Where-Object Name -eq "SqliteDateiRepository")[0]
+
+        $lease = $Pool.Borrow($BorrowTimeoutMilliseconds)
+
+        # Im Modul ausgeführt, weil der Typ nur dort bekannt ist.
+        $global:CrawlerWriterRepository = & $module { param($l) [SqliteDateiRepository]::new($l) } $lease
+    }
+    catch {
+        $startError = $_.Exception.Message
+
+        if ($null -ne $lease) {
+            $lease.Dispose()
+        }
+    }
+}
+
+$repository = $global:CrawlerWriterRepository
+
+foreach ($batch in $Queue.GetConsumingEnumerable()) {
+    if ($null -eq $repository) {
+        $Results.Enqueue([pscustomobject]@{ Batch = $batch; Message = $startError; Retry = $true })
+        continue
+    }
+
+    try {
+        $repository.SaveBatch($batch)
+    }
+    catch {
+        $Results.Enqueue([pscustomobject]@{ Batch = $batch; Message = $_.Exception.Message; Retry = $false })
+    }
+}
+'@
+
+# Gibt die Verbindung des Schreib-Threads an den Pool zurück.
+$script:WriterCleanupScript = @'
+if ($null -ne $global:CrawlerWriterRepository) {
+    $global:CrawlerWriterRepository.Dispose()
+    $global:CrawlerWriterRepository = $null
+}
+'@
+
+
+# Eine Datei, deren Inhalt noch gelesen werden muss. $Stored ist der Stand
+# aus dem Repository ($null bei neuen Dateien) und entscheidet später, ob die
+# Datei als New oder Changed gilt.
+class PendingRead {
+    [System.IO.FileInfo]$File
+    [Datei]$Datei
+    [Datei]$Stored
+}
+
 
 # Der Crawler durchläuft einen Ordnerbaum, vergleicht jede Datei mit dem
 # Repository, lässt den DocScanner den Inhalt neuer oder geänderter Dateien
 # lesen und speichert sie. Dateien, die seit dem letzten Scan verschwunden
 # sind, werden entfernt.
+#
+# Ein Scan läuft in zwei Phasen:
+#   1. Auswahl (Hauptthread): Ordner durchlaufen, mit dem Repository
+#      vergleichen. Dateien, deren Inhalt gelesen werden muss, kommen auf
+#      eine Liste.
+#   2. Lesen: Die Liste wird bei vielen Dateien parallel von mehreren Workern
+#      gelesen (MaxParallelism), sonst nacheinander. Die Ergebnisse werden im
+#      Hauptthread gezählt, daher braucht die Fehlerliste keine Absicherung
+#      gegen gleichzeitigen Zugriff.
+#
+# Gespeichert wird in beiden Phasen paketweise. Mit der Standard-Datenbank
+# übernimmt das ein eigener Schreib-Thread (UseWriterThread), sodass
+# Durchlaufen, Lesen und Schreiben gleichzeitig laufen.
 class Crawler {
 
     # =============================================================================
@@ -40,9 +205,25 @@ class Crawler {
     # um zusätzliche Dateitypen zu unterstützen.
     [DocScanner]$DocScanner = [DocScanner]::new()
 
-    # Speichert den Index. Jede von [DateiRepository] abgeleitete Klasse kann
-    # zugewiesen werden, z. B. eine, die in eine Datenbank schreibt.
-    [DateiRepository]$Repository = [InMemoryDateiRepository]::new()
+    # Speichert den Index. Standardmäßig die SQLite-Datenbank unter
+    # DatabasePath: Bleibt Repository leer, holt sich der Crawler beim ersten
+    # Scan eine Verbindung aus DatabasePool und gibt sie in Dispose() zurück.
+    # Jede andere von [DateiRepository] abgeleitete Klasse kann zugewiesen
+    # werden, z. B. [InMemoryDateiRepository] für Tests; sie wird dann im
+    # Hauptthread beschrieben, ohne Schreib-Thread.
+    [DateiRepository]$Repository = $null
+
+    # Verbindungspool der SQLite-Datenbank (Initialize-DatabasePool). Der
+    # Crawler leiht sich daraus eine Verbindung für den Hauptthread und eine
+    # für den Schreib-Thread. Bleibt er leer, öffnet der Crawler selbst einen
+    # Pool mit zwei Verbindungen zu DatabasePath und schließt ihn in
+    # Dispose(). Ein zugewiesener Pool (z. B. von der GUI, die ihn auch für
+    # die Suche nutzt) wird nicht geschlossen. Als [object] deklariert, weil
+    # der C#-Typ erst beim Laden des SQLite-Moduls entsteht.
+    [object]$DatabasePool = $null
+
+    # Datenbankdatei, wenn der Crawler den Pool selbst öffnet.
+    [string]$DatabasePath = $script:DefaultDatabasePath
 
 
     # =============================================================================
@@ -65,7 +246,9 @@ class Crawler {
     # großen Scans würde die Liste (inklusive Inhalt) den Speicher füllen.
     [bool]$CollectFiles = $false
 
-    # Anzahl der Dateien, die auf einmal ins Repository geschrieben werden.
+    # Anzahl der Dateien, die auf einmal ins Repository geschrieben werden
+    # (SaveBatch) bzw. gelöscht werden (RemoveBatch). Gelesen wird der
+    # gespeicherte Stand dagegen einzeln pro Datei (Get).
     [int]$SaveBatchSize = 200
 
     # Ordnernamen, die überall im Baum übersprungen werden (ohne Beachtung
@@ -82,6 +265,36 @@ class Crawler {
     # Symbolischen Links und Junctions zu Ordnern folgen. Jeder echte Ordner
     # wird nur einmal besucht, daher führen Link-Zyklen nicht zu Endlosschleifen.
     [bool]$FollowDirectoryLinks = $false
+
+    # Anzahl der Worker, die Inhalte gleichzeitig lesen. 1 = alles
+    # nacheinander im Hauptthread, wie ohne Multithreading.
+    [int]$MaxParallelism = $script:DefaultMaxParallelism
+
+    # Erst ab so vielen zu lesenden Dateien werden Worker verwendet. Bei
+    # wenigen Dateien dauert das Starten der Worker länger als das Lesen.
+    [int]$ParallelThreshold = 50
+
+    # Pakete in einem eigenen Thread speichern, während weiter gescannt wird.
+    # Nur mit der SQLite-Datenbank aus DatabasePool, weil der Thread eine
+    # eigene Verbindung braucht. Ein zugewiesenes Repository wird immer im
+    # Hauptthread beschrieben. Der Thread startet erst beim ersten Paket;
+    # ein Scan ohne Änderungen kostet ihn also nichts.
+    [bool]$UseWriterThread = $true
+
+    # So lange wird auf eine freie Verbindung im Pool gewartet. Ist sie dann
+    # nicht frei (z. B. weil ein zugewiesener Pool ausgelastet ist), speichert
+    # der Hauptthread selbst bzw. der Scan meldet den Fehler.
+    [int]$PoolTimeoutMilliseconds = 30000
+
+    # Höchstens so viele Pakete warten auf den Schreib-Thread. Ist die
+    # Warteschlange voll, wartet der Hauptthread; so bleibt der Speicher
+    # begrenzt, auch wenn das Schreiben langsamer ist als das Lesen.
+    [int]$WriterQueueCapacity = 8
+
+    # Anzahl der Dateien, die ein Worker auf einmal bekommt. Größere Pakete
+    # sparen Verwaltungsaufwand, kleinere verteilen die Arbeit gleichmäßiger.
+    [int]$ParallelBatchSize = 20
+
 
     [bool]$VerboseOutput = $false
     [bool]$ProgressOutput = $false
@@ -151,6 +364,43 @@ class Crawler {
     # Dateien, die darauf warten, ins Repository geschrieben zu werden.
     hidden [System.Collections.Generic.List[Datei]]$_pendingSaves
 
+    # Dateien, deren Inhalt in Phase 2 gelesen wird.
+    hidden [System.Collections.Generic.List[PendingRead]]$_pendingReads
+
+
+    # Ob das Repository RemoveBatch() anbietet. Ältere oder eigene
+    # Repositories haben nur Remove(); dann wird einzeln gelöscht.
+    hidden [bool]$_repositoryHasRemoveBatch = $false
+
+    # True, wenn das Repository aus DatabasePool geliehen ist und in
+    # Dispose() zurückgegeben werden muss.
+    hidden [bool]$_ownsRepository = $false
+
+    # True, wenn der Crawler DatabasePool selbst geöffnet hat und ihn in
+    # Dispose() schließen muss.
+    hidden [bool]$_ownsPool = $false
+
+    # Pool der Worker. Er bleibt über mehrere Scans erhalten, weil das Laden
+    # der Module in jedem Worker Zeit kostet; Dispose() gibt ihn frei.
+    hidden [System.Management.Automation.Runspaces.RunspacePool]$_workerPool
+    hidden [int]$_workerPoolSize = 0
+
+    # Schreib-Thread eines laufenden Scans: Warteschlange der Pakete,
+    # zurückgemeldete Fehler und der Thread selbst. $null, wenn im
+    # Hauptthread gespeichert wird.
+    hidden [System.Collections.Concurrent.BlockingCollection[object]]$_writeQueue
+    hidden [System.Collections.Concurrent.ConcurrentQueue[object]]$_writeResults
+    hidden [powershell]$_writerShell
+    hidden [System.IAsyncResult]$_writerHandle
+
+    # Runspace des Schreib-Threads. Er bleibt wie der Worker-Pool über Scans
+    # erhalten, damit Modul und Verbindung nur einmal geladen werden.
+    hidden [System.Management.Automation.Runspaces.Runspace]$_writerRunspace
+
+    # True, solange ScanFolder läuft und der Schreib-Thread beim ersten
+    # Paket gestartet werden darf.
+    hidden [bool]$_writerWanted = $false
+
 
     # =============================================================================
     # SCAN-VORBEREITUNG
@@ -188,6 +438,12 @@ class Crawler {
         $this._visitedFolders = [System.Collections.Generic.HashSet[string]]::new($comparer)
         $this._failedFolders = [System.Collections.Generic.List[string]]::new()
         $this._pendingSaves = [System.Collections.Generic.List[Datei]]::new()
+        $this._pendingReads = [System.Collections.Generic.List[PendingRead]]::new()
+
+        $this._EnsureRepository()
+
+        $repositoryType = $this.Repository.GetType()
+        $this._repositoryHasRemoveBatch = $null -ne $repositoryType.GetMethod("RemoveBatch", [type[]]@([string[]]))
     }
 
 
@@ -212,12 +468,80 @@ class Crawler {
         # wirksam werden.
         $this._PrepareScan()
 
-        $this._Traverse($rootPath)
-        $this._FlushSaves()
+        # Der Schreib-Thread startet erst beim ersten Paket (_FlushSaves).
+        $this._writerWanted = $true
 
+        try {
+            # Phase 1: auswählen. Phase 2: Inhalte lesen. Gespeichert wird
+            # währenddessen im Schreib-Thread.
+            $this._Traverse($rootPath)
+            $this._ReadPendingContents()
+            $this._FlushSaves()
+        }
+        finally {
+            # Wartet, bis alle Pakete gespeichert sind, auch nach einem Fehler.
+            $this._writerWanted = $false
+            $this._StopWriter()
+        }
+
+        # Erst nach dem Schreiben, damit Speichern und Löschen sich nicht
+        # gegenseitig sperren.
         if ($this.DetectDeletedFiles) {
             $this._RemoveDeletedFiles($rootPath)
         }
+    }
+
+
+    # Gibt Worker, Schreib-Thread und die geliehenen Verbindungen frei und
+    # schließt den Pool, wenn der Crawler ihn selbst geöffnet hat. Nach dem
+    # letzten Scan aufrufen; ein späterer Scan startet alles bei Bedarf neu.
+    [void] Dispose() {
+        $this._writerWanted = $false
+        $this._StopWriter()
+        $this._DisposeWriterRunspace()
+        $this._DisposeWorkerPool()
+
+        if ($this._ownsRepository -and $null -ne $this.Repository) {
+            # Gibt die Verbindung an den Pool zurück.
+            $this.Repository.Dispose()
+            $this.Repository = $null
+            $this._ownsRepository = $false
+        }
+
+        if ($this._ownsPool -and $null -ne $this.DatabasePool) {
+            $this.DatabasePool.Dispose()
+            $this.DatabasePool = $null
+            $this._ownsPool = $false
+        }
+    }
+
+
+    # Holt eine Verbindung aus DatabasePool, falls kein Repository gesetzt
+    # ist, und öffnet den Pool vorher selbst, falls auch keiner gesetzt ist.
+    # Initialize-DatabasePool richtet beim ersten Mal auch die
+    # SQLite-Bibliotheken unter lib/sqlite ein.
+    hidden [void] _EnsureRepository() {
+        if ($null -ne $this.Repository) {
+            return
+        }
+
+        if ($null -eq $this.DatabasePool) {
+            # Eine Verbindung für den Hauptthread, eine für den Schreib-Thread.
+            $this.DatabasePool = Initialize-DatabasePool -DatabasePath $this.DatabasePath -PoolSize 2
+            $this._ownsPool = $true
+        }
+
+        $lease = $this.DatabasePool.Borrow($this.PoolTimeoutMilliseconds)
+
+        try {
+            $this.Repository = [SqliteDateiRepository]::new($lease)
+        }
+        catch {
+            $lease.Dispose()
+            throw
+        }
+
+        $this._ownsRepository = $true
     }
 
 
@@ -232,6 +556,7 @@ class Crawler {
         $this._PrepareScan()
 
         $datei = $this._ProcessFile($file)
+        $this._ReadPendingContents()
         $this._FlushSaves()
 
         return $datei
@@ -362,8 +687,10 @@ class Crawler {
     # =============================================================================
 
     # Gibt die verarbeitete Datei zurück oder $null, wenn sie fehlgeschlagen
-    # ist. Fehlgeschlagene Dateien werden nicht gespeichert, daher versucht
-    # der nächste Scan sie erneut.
+    # ist. Scheitert nur das Lesen des Inhalts, wird die Datei ohne Inhalt
+    # gespeichert und zurückgegeben (siehe _MarkContentFailed). Scheitern
+    # Metadaten oder Repository, wird nichts gespeichert, daher versucht der
+    # nächste Scan die Datei erneut.
     hidden [Datei] _ProcessFile([System.IO.FileInfo]$file) {
         $this.ScannedFiles++
         $filePath = $file.FullName
@@ -417,32 +744,20 @@ class Crawler {
                 $shouldRead = $false
             }
 
+            # Gelesen wird erst in Phase 2 (_ReadPendingContents), damit
+            # mehrere Dateien gleichzeitig gelesen werden können.
             if ($shouldRead) {
-                $phase = [ScanPhase]::Content
-                $datei.Content = $this.DocScanner.ReadContent($file)
-                $datei.HasContent = $true
-                $this.ContentFilesRead++
-            }
-            else {
-                $this.ContentFilesSkipped++
+                $pending = [PendingRead]::new()
+                $pending.File = $file
+                $pending.Datei = $datei
+                $pending.Stored = $stored
+                $this._pendingReads.Add($pending)
+
+                return $datei
             }
 
-            if ($null -eq $stored) {
-                $datei.Status = [DateiStatus]::New
-                $this.NewFiles++
-            }
-            else {
-                $datei.Status = [DateiStatus]::Changed
-                $this.ChangedFiles++
-            }
-
-            $datei.IndexedAtUtc = [datetime]::UtcNow
-            $this._QueueSave($datei)
-            $this._Collect($datei)
-
-            if ($this.VerboseOutput) {
-                $datei.print() | Out-Host
-            }
+            $this.ContentFilesSkipped++
+            $this._FinishNewOrChanged($datei, $stored)
 
             return $datei
         }
@@ -454,6 +769,223 @@ class Crawler {
         finally {
             $this._WriteProgress()
         }
+    }
+
+
+    # Zählt eine neue oder geänderte Datei, setzt ihren Status und reiht sie
+    # zum Speichern ein.
+    hidden [void] _FinishNewOrChanged([Datei]$datei, [Datei]$stored) {
+        if ($null -eq $stored) {
+            $datei.Status = [DateiStatus]::New
+            $this.NewFiles++
+        }
+        else {
+            $datei.Status = [DateiStatus]::Changed
+            $this.ChangedFiles++
+        }
+
+        $datei.IndexedAtUtc = [datetime]::UtcNow
+        $this._QueueSave($datei)
+        $this._Collect($datei)
+
+        if ($this.VerboseOutput) {
+            $datei.print() | Out-Host
+        }
+    }
+
+
+    # =============================================================================
+    # INHALTE LESEN (PHASE 2)
+    # =============================================================================
+
+    # Liest alle vorgemerkten Dateien und leert die Liste. Parallel nur, wenn
+    # es sich lohnt und die Worker denselben DocScanner nachbauen können: Zur
+    # Laufzeit registrierte Reader kennt ein Worker nicht, dann wird
+    # nacheinander gelesen.
+    hidden [void] _ReadPendingContents() {
+        if ($null -eq $this._pendingReads -or $this._pendingReads.Count -eq 0) {
+            return
+        }
+
+        $items = $this._pendingReads.ToArray()
+        $this._pendingReads.Clear()
+
+        $useWorkers = (
+            $this.MaxParallelism -gt 1 -and
+            $items.Length -ge $this.ParallelThreshold -and
+            -not $this.DocScanner.HasCustomReaders()
+        )
+
+        if ($useWorkers) {
+            $this._ReadParallel($items)
+        }
+        else {
+            $this._ReadSequential($items, 0, $items.Length)
+        }
+    }
+
+
+    # Liest die Einträge [$start, $end) im Hauptthread.
+    # Wie bei den Workern wird jedes Paket vorher an die Reader angekündigt
+    # (DocScanner.Prepare).
+    hidden [void] _ReadSequential([PendingRead[]]$items, [int]$start, [int]$end) {
+        $batchSize = [Math]::Max(1, $this.ParallelBatchSize)
+
+        for ($i = $start; $i -lt $end; $i++) {
+            if (($i - $start) % $batchSize -eq 0) {
+                $count = [Math]::Min($batchSize, $end - $i)
+                $batchFiles = [System.IO.FileInfo[]]::new($count)
+
+                for ($j = 0; $j -lt $count; $j++) {
+                    $batchFiles[$j] = $items[$i + $j].File
+                }
+
+                $this.DocScanner.Prepare($batchFiles)
+            }
+
+            $item = $items[$i]
+
+            try {
+                $text = $this.DocScanner.ReadContent($item.File)
+                $this._CompleteRead($item, $text)
+            }
+            catch {
+                $this._MarkContentFailed($item.Datei, $item.Stored, $_.Exception.Message)
+            }
+
+            $this._WriteReadProgress($i + 1, $items.Length)
+        }
+    }
+
+
+    # Verteilt die Einträge in Paketen auf die Worker. Es sind höchstens
+    # doppelt so viele Pakete unterwegs wie Worker, damit nicht alle Texte
+    # gleichzeitig im Speicher liegen. Die Ergebnisse werden in der
+    # Reihenfolge der Pakete abgeholt und im Hauptthread verarbeitet.
+    hidden [void] _ReadParallel([PendingRead[]]$items) {
+        $pool = $this._GetWorkerPool()
+        $batchSize = [Math]::Max(1, $this.ParallelBatchSize)
+        $maxInFlight = 2 * $this._workerPoolSize
+        $jobs = [System.Collections.Generic.Queue[object]]::new()
+        $nextStart = 0
+        $done = 0
+        $workersFailed = $false
+
+        while ($nextStart -lt $items.Length -or $jobs.Count -gt 0) {
+            while (-not $workersFailed -and $jobs.Count -lt $maxInFlight -and $nextStart -lt $items.Length) {
+                $count = [Math]::Min($batchSize, $items.Length - $nextStart)
+                $paths = [string[]]::new($count)
+
+                for ($i = 0; $i -lt $count; $i++) {
+                    $paths[$i] = $items[$nextStart + $i].File.FullName
+                }
+
+                $shell = [powershell]::Create()
+                $shell.RunspacePool = $pool
+                [void]$shell.AddScript($script:WorkerScript)
+                [void]$shell.AddParameter("ModulePath", $script:DocScannerModulePath)
+                [void]$shell.AddParameter("MaxContentSizeBytes", $this.DocScanner.MaxContentSizeBytes)
+                [void]$shell.AddParameter("Start", $nextStart)
+                [void]$shell.AddParameter("Paths", $paths)
+
+                $jobs.Enqueue([pscustomobject]@{
+                    Shell  = $shell
+                    Handle = $shell.BeginInvoke()
+                    Start  = $nextStart
+                    Count  = $count
+                })
+
+                $nextStart += $count
+            }
+
+            # Startet ein Worker gar nicht (z. B. Modul nicht ladbar), wird
+            # der Rest im Hauptthread gelesen statt abzubrechen.
+            if ($jobs.Count -eq 0) {
+                $this._ReadSequential($items, $nextStart, $items.Length)
+                break
+            }
+
+            $job = $jobs.Dequeue()
+
+            try {
+                $results = $job.Shell.EndInvoke($job.Handle)
+
+                if ($results.Count -ne $job.Count) {
+                    throw "Worker returned $($results.Count) of $($job.Count) results."
+                }
+
+                foreach ($result in $results) {
+                    $item = $items[$result.Index]
+
+                    if ($null -ne $result.Error) {
+                        $this._MarkContentFailed($item.Datei, $item.Stored, $result.Error)
+                    }
+                    else {
+                        $this._CompleteRead($item, [string]$result.Content)
+                    }
+                }
+            }
+            catch {
+                $workersFailed = $true
+                $this._ReadSequential($items, $job.Start, $job.Start + $job.Count)
+            }
+            finally {
+                $job.Shell.Dispose()
+            }
+
+            $done += $job.Count
+            $this._WriteReadProgress($done, $items.Length)
+
+            if ($workersFailed -and $jobs.Count -eq 0 -and $nextStart -lt $items.Length) {
+                $this._ReadSequential($items, $nextStart, $items.Length)
+                $nextStart = $items.Length
+            }
+        }
+    }
+
+
+    # Erstellt den Pool beim ersten Bedarf oder neu, wenn MaxParallelism
+    # geändert wurde. Die Worker selbst entstehen erst, wenn sie gebraucht
+    # werden.
+    hidden [System.Management.Automation.Runspaces.RunspacePool] _GetWorkerPool() {
+        $size = [Math]::Max(1, $this.MaxParallelism)
+
+        # Nur den Pool ersetzen; Datenbank und Schreib-Thread laufen weiter.
+        if ($null -ne $this._workerPool -and $this._workerPoolSize -ne $size) {
+            $this._DisposeWorkerPool()
+        }
+
+        if ($null -eq $this._workerPool) {
+            $pool = [runspacefactory]::CreateRunspacePool(1, $size)
+            $pool.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::ReuseThread
+            $pool.Open()
+
+            $this._workerPool = $pool
+            $this._workerPoolSize = $size
+        }
+
+        return $this._workerPool
+    }
+
+
+    hidden [void] _DisposeWorkerPool() {
+        if ($null -eq $this._workerPool) {
+            return
+        }
+
+        $this._workerPool.Close()
+        $this._workerPool.Dispose()
+        $this._workerPool = $null
+        $this._workerPoolSize = 0
+    }
+
+
+    # Übernimmt den gelesenen Text einer vorgemerkten Datei.
+    hidden [void] _CompleteRead([PendingRead]$item, [string]$text) {
+        $item.Datei.Content = $text
+        $item.Datei.HasContent = $true
+        $this.ContentFilesRead++
+        $this._FinishNewOrChanged($item.Datei, $item.Stored)
     }
 
 
@@ -471,6 +1003,30 @@ class Crawler {
         if ($this.VerboseOutput) {
             Write-Host "File unchanged, skipping content: $($datei.Path)"
         }
+    }
+
+
+    # Speichert eine Datei, deren Inhalt nicht gelesen werden konnte, ohne
+    # Inhalt (HasContent = $false). Sie zählt als fehlgeschlagen und der Fehler
+    # steht in Errors und in ContentError. Beim nächsten Scan ist sie
+    # unverändert und wird übersprungen, bis sich ihre Änderungszeit ändert.
+    hidden [void] _MarkContentFailed([Datei]$datei, [Datei]$stored, [string]$message) {
+        $datei.Content = $null
+        $datei.HasContent = $false
+        $datei.ContentError = $message
+        $datei.IndexedAtUtc = [datetime]::UtcNow
+
+        if ($null -eq $stored) {
+            $datei.Status = [DateiStatus]::New
+        }
+        else {
+            $datei.Status = [DateiStatus]::Changed
+        }
+
+        $this.FailedFiles++
+        $this._AddError($datei.Path, [ScanPhase]::Content, $message)
+        $this._QueueSave($datei)
+        $this._Collect($datei)
     }
 
 
@@ -504,6 +1060,7 @@ class Crawler {
     }
 
 
+    # Gibt das aktuelle Paket an den Schreib-Thread oder speichert es direkt.
     hidden [void] _FlushSaves() {
         if ($null -eq $this._pendingSaves -or $this._pendingSaves.Count -eq 0) {
             return
@@ -512,23 +1069,175 @@ class Crawler {
         $batch = $this._pendingSaves.ToArray()
         $this._pendingSaves.Clear()
 
+        if ($this._writerWanted -and $null -eq $this._writerShell) {
+            $this._StartWriter()
+        }
+
+        if ($null -ne $this._writeQueue) {
+            # Blockiert nur, wenn die Warteschlange voll ist.
+            $this._writeQueue.Add($batch)
+            $this._CollectWriterResults()
+            return
+        }
+
+        $this._SaveNow($batch)
+    }
+
+
+    hidden [void] _SaveNow([Datei[]]$batch) {
         try {
             $this.Repository.SaveBatch($batch)
         }
         catch {
-            $message = $_.Exception.Message
+            $this._MarkSaveFailed($batch, $_.Exception.Message)
+        }
+    }
 
-            # Die Dateien wurden beim Einreihen als neu oder geändert gezählt.
-            foreach ($datei in $batch) {
-                if ($datei.Status -eq [DateiStatus]::New) {
-                    $this.NewFiles--
-                }
-                else {
-                    $this.ChangedFiles--
-                }
 
-                $this.FailedFiles++
+    # Korrigiert die Zähler für ein Paket, das nicht gespeichert wurde. Die
+    # Dateien wurden beim Einreihen als neu oder geändert gezählt. Dateien
+    # mit ContentError zählen bereits als fehlgeschlagen.
+    hidden [void] _MarkSaveFailed([Datei[]]$batch, [string]$message) {
+        foreach ($datei in $batch) {
+            if (-not [string]::IsNullOrEmpty($datei.ContentError)) {
                 $this._AddError($datei.Path, [ScanPhase]::Repository, $message)
+                continue
+            }
+
+            if ($datei.Status -eq [DateiStatus]::New) {
+                $this.NewFiles--
+            }
+            else {
+                $this.ChangedFiles--
+            }
+
+            $this.FailedFiles++
+            $this._AddError($datei.Path, [ScanPhase]::Repository, $message)
+        }
+    }
+
+
+    # =============================================================================
+    # SCHREIB-THREAD
+    # =============================================================================
+
+    # Startet den Schreib-Thread, wenn das Repository aus DatabasePool
+    # stammt. Sonst bleibt die Warteschlange leer und _FlushSaves speichert
+    # im Hauptthread. Wird höchstens einmal pro Scan aufgerufen, weil
+    # _writerShell danach gesetzt ist bzw. _writerWanted zurückgesetzt wird.
+    hidden [void] _StartWriter() {
+        if (
+            -not $this.UseWriterThread -or
+            -not $this._ownsRepository -or
+            $null -eq $this.DatabasePool
+        ) {
+            $this._writerWanted = $false
+            return
+        }
+
+        if ($null -eq $this._writerRunspace) {
+            $this._writerRunspace = [runspacefactory]::CreateRunspace()
+            $this._writerRunspace.Open()
+        }
+
+        $this._writeQueue = [System.Collections.Concurrent.BlockingCollection[object]]::new(
+            [Math]::Max(1, $this.WriterQueueCapacity)
+        )
+        $this._writeResults = [System.Collections.Concurrent.ConcurrentQueue[object]]::new()
+
+        $shell = [powershell]::Create()
+        $shell.Runspace = $this._writerRunspace
+        [void]$shell.AddScript($script:WriterScript)
+        [void]$shell.AddParameter("ModulePath", $script:SqliteModulePath)
+        [void]$shell.AddParameter("Pool", $this.DatabasePool)
+        # Höchstens 2 Sekunden: Ist der Pool ausgelastet, speichert besser
+        # der Hauptthread selbst, statt den Scan lange warten zu lassen.
+        [void]$shell.AddParameter("BorrowTimeoutMilliseconds", [Math]::Min($this.PoolTimeoutMilliseconds, 2000))
+        [void]$shell.AddParameter("Queue", $this._writeQueue)
+        [void]$shell.AddParameter("Results", $this._writeResults)
+
+        $this._writerShell = $shell
+        $this._writerHandle = $shell.BeginInvoke()
+    }
+
+
+    # Schließt die Warteschlange, wartet, bis der Schreib-Thread alle Pakete
+    # gespeichert hat, und übernimmt seine Fehler.
+    hidden [void] _StopWriter() {
+        if ($null -eq $this._writerShell) {
+            return
+        }
+
+        $this._writeQueue.CompleteAdding()
+
+        try {
+            [void]$this._writerShell.EndInvoke($this._writerHandle)
+        }
+        catch {
+            # Bricht der Thread selbst ab, bleiben unverarbeitete Pakete in
+            # der Warteschlange; sie werden unten im Hauptthread gespeichert.
+            $this._AddError($this.DatabasePath, [ScanPhase]::Repository, $_.Exception.Message)
+        }
+        finally {
+            $this._writerShell.Dispose()
+            $this._writerShell = $null
+            $this._writerHandle = $null
+        }
+
+        $remaining = $this._writeQueue
+        $this._writeQueue = $null
+
+        $this._CollectWriterResults()
+
+        foreach ($batch in $remaining.GetConsumingEnumerable()) {
+            $this._SaveNow($batch)
+        }
+
+        $remaining.Dispose()
+        $this._writeResults = $null
+    }
+
+
+    # Gibt die Verbindung des Schreib-Threads an den Pool zurück und schließt
+    # seinen Runspace.
+    hidden [void] _DisposeWriterRunspace() {
+        if ($null -eq $this._writerRunspace) {
+            return
+        }
+
+        $shell = [powershell]::Create()
+
+        try {
+            $shell.Runspace = $this._writerRunspace
+            [void]$shell.AddScript($script:WriterCleanupScript)
+            [void]$shell.Invoke()
+        }
+        catch {
+            # Die Verbindung schließt spätestens Dispose() des Pools.
+        }
+        finally {
+            $shell.Dispose()
+            $this._writerRunspace.Dispose()
+            $this._writerRunspace = $null
+        }
+    }
+
+
+    # Übernimmt die Rückmeldungen des Schreib-Threads im Hauptthread.
+    hidden [void] _CollectWriterResults() {
+        if ($null -eq $this._writeResults) {
+            return
+        }
+
+        $result = $null
+
+        while ($this._writeResults.TryDequeue([ref]$result)) {
+            if ($result.Retry) {
+                # Der Thread konnte die Datenbank nicht öffnen.
+                $this._SaveNow([Datei[]]$result.Batch)
+            }
+            else {
+                $this._MarkSaveFailed([Datei[]]$result.Batch, [string]$result.Message)
             }
         }
     }
@@ -547,26 +1256,60 @@ class Crawler {
             return
         }
 
+        $deletedPaths = [System.Collections.Generic.List[string]]::new()
+
         foreach ($path in $storedPaths) {
-            if ($this._seenPaths.Contains($path) -or $this._IsBelowFailedFolder($path)) {
-                continue
+            if (-not $this._seenPaths.Contains($path) -and -not $this._IsBelowFailedFolder($path)) {
+                $deletedPaths.Add($path)
             }
+        }
 
-            try {
-                $this.Repository.Remove($path)
-                $this.DeletedFiles++
+        # Mit RemoveBatch in Paketen löschen (bei SQLite eine Transaktion pro
+        # Aufruf). Scheitert ein Paket, wird es einzeln gelöscht, damit ein
+        # Fehler dem richtigen Pfad zugeordnet wird.
+        $batchSize = [Math]::Max(1, $this.SaveBatchSize)
 
-                if ($this.CollectFiles) {
-                    $deleted = [Datei]::new()
-                    $deleted.Path = $path
-                    $deleted.Name = [System.IO.Path]::GetFileName($path)
-                    $deleted.Status = [DateiStatus]::Deleted
-                    $this.Files.Add($deleted)
+        for ($start = 0; $start -lt $deletedPaths.Count; $start += $batchSize) {
+            $count = [Math]::Min($batchSize, $deletedPaths.Count - $start)
+            $chunk = $deletedPaths.GetRange($start, $count).ToArray()
+            $removedAsBatch = $false
+
+            if ($this._repositoryHasRemoveBatch) {
+                try {
+                    $this.Repository.RemoveBatch($chunk)
+                    $removedAsBatch = $true
+                }
+                catch {
+                    $removedAsBatch = $false
                 }
             }
-            catch {
-                $this._AddError($path, [ScanPhase]::Repository, $_.Exception.Message)
+
+            foreach ($path in $chunk) {
+                if (-not $removedAsBatch) {
+                    try {
+                        $this.Repository.Remove($path)
+                    }
+                    catch {
+                        $this._AddError($path, [ScanPhase]::Repository, $_.Exception.Message)
+                        continue
+                    }
+                }
+
+                $this._MarkDeleted($path)
             }
+        }
+    }
+
+
+    hidden [void] _MarkDeleted([string]$path) {
+        $this.DeletedFiles++
+
+        if ($this.CollectFiles) {
+            $deleted = [Datei]::new()
+            $deleted.Path = $path
+            $deleted.Name = [System.IO.Path]::GetFileName($path)
+            $deleted.Status = [DateiStatus]::Deleted
+            $this.Files.Add($deleted)
         }
     }
 
@@ -610,6 +1353,17 @@ class Crawler {
                 $this.UnchangedFiles,
                 $this.FailedFiles
             )
+        }
+    }
+
+
+    hidden [void] _WriteReadProgress([int]$done, [int]$total) {
+        if (
+            $this.ProgressOutput -and
+            $this.ProgressInterval -gt 0 -and
+            ($done % $this.ProgressInterval -eq 0 -or $done -eq $total)
+        ) {
+            Write-Host ("Read: {0} of {1} | Failed: {2}" -f $done, $total, $this.FailedFiles)
         }
     }
 
