@@ -26,10 +26,21 @@ $script:DefaultExcludedFolderNames = @(
     ".idea", ".vs"
 )
 
-# Ein Kern bleibt für den Hauptthread (Ordner, Datenbank) frei. Mehr als 4
-# Worker brachten in Messungen nichts mehr: PowerShell-Code muss in jedem
-# Worker neu "warmlaufen", und viele CPUs haben nur wenige schnelle Kerne.
-$script:DefaultMaxParallelism = [Math]::Max(1, [Math]::Min(4, [Environment]::ProcessorCount - 1))
+# Ordner mit diesen Endungen sind unter macOS Pakete (Programme, Frameworks,
+# Plug-ins). Der Finder zeigt sie als eine Datei; ihr Inhalt sind
+# Programmdateien und Icons, keine Dokumente. In einem Benutzerordner machten
+# allein vier Entwickler-Apps über die Hälfte der zu lesenden Dateien aus.
+$script:DefaultExcludedFolderExtensions = @(
+    ".app", ".appex", ".framework", ".bundle",
+    ".plugin", ".kext", ".xpc", ".prefPane"
+)
+
+# Ein Kern bleibt für den Hauptthread (Ordner, Datenbank) frei. Höchstens 8:
+# Bei Ordnern mit vielen Bildern warten die Worker meist auf die
+# Texterkennung, die außerhalb von PowerShell läuft; 8 statt 4 Worker waren
+# dort etwa 25-30 % schneller. Bei reinen Dokumenten änderte sich kaum
+# etwas, und mehr als 8 brachten in keinem Fall noch etwas.
+$script:DefaultMaxParallelism = [Math]::Max(1, [Math]::Min(8, [Environment]::ProcessorCount - 1))
 
 # Standard-Datenbank: data/index.sqlite3 im Projektordner, unabhängig davon,
 # aus welchem Ordner das Skript gestartet wird.
@@ -255,6 +266,11 @@ class Crawler {
     # der Groß-/Kleinschreibung).
     [string[]]$ExcludedFolderNames = $script:DefaultExcludedFolderNames
 
+    # Ordner mit diesen Endungen werden samt Inhalt übersprungen (ohne
+    # Beachtung der Groß-/Kleinschreibung), standardmäßig macOS-Pakete wie
+    # ".app". Leeres Array: alle Ordner durchsuchen.
+    [string[]]$ExcludedFolderExtensions = $script:DefaultExcludedFolderExtensions
+
     # Absolute Ordnerpfade, die samt Unterordnern übersprungen werden.
     [string[]]$ExcludedPaths = @()
 
@@ -293,6 +309,9 @@ class Crawler {
 
     # Anzahl der Dateien, die ein Worker auf einmal bekommt. Größere Pakete
     # sparen Verwaltungsaufwand, kleinere verteilen die Arbeit gleichmäßiger.
+    # Kleiner als 20 lohnt sich nicht: Die Texterkennung erkennt alle Bilder
+    # eines Pakets in einem Aufruf (DocScanner.Prepare); bei kleineren
+    # Paketen startet sie öfter und wird langsamer.
     [int]$ParallelBatchSize = 20
 
 
@@ -349,6 +368,7 @@ class Crawler {
 
     hidden [System.IO.EnumerationOptions]$_enumerationOptions
     hidden [System.Collections.Generic.HashSet[string]]$_excludedNames
+    hidden [System.Collections.Generic.HashSet[string]]$_excludedExtensions
     hidden [string[]]$_excludedPaths
 
     # Pfade, die im aktuellen Scan auf der Festplatte gefunden wurden.
@@ -423,6 +443,13 @@ class Crawler {
         $this._excludedNames = (
             [System.Collections.Generic.HashSet[string]]::new(
                 [string[]]@($this.ExcludedFolderNames | Where-Object { $_ }),
+                [System.StringComparer]::OrdinalIgnoreCase
+            )
+        )
+
+        $this._excludedExtensions = (
+            [System.Collections.Generic.HashSet[string]]::new(
+                [string[]]@($this.ExcludedFolderExtensions | Where-Object { $_ }),
                 [System.StringComparer]::OrdinalIgnoreCase
             )
         )
@@ -643,6 +670,13 @@ class Crawler {
             return $null
         }
 
+        if (
+            $this._excludedExtensions.Count -gt 0 -and
+            $this._excludedExtensions.Contains($folder.Extension)
+        ) {
+            return $null
+        }
+
         foreach ($excludedPath in $this._excludedPaths) {
             if ([PathUtil]::IsSameOrUnder($folder.FullName, $excludedPath)) {
                 return $null
@@ -807,7 +841,7 @@ class Crawler {
             return
         }
 
-        $items = $this._pendingReads.ToArray()
+        $items = [Crawler]::GroupByExtension($this._pendingReads)
         $this._pendingReads.Clear()
 
         $useWorkers = (
@@ -822,6 +856,38 @@ class Crawler {
         else {
             $this._ReadSequential($items, 0, $items.Length)
         }
+    }
+
+
+    # Ordnet die Dateien nach Endung, sonst in der gefundenen Reihenfolge.
+    # So bestehen die Pakete der Worker möglichst aus gleichartigen Dateien:
+    # Die Texterkennung erkennt alle Bilder eines Pakets in einem Aufruf
+    # (DocScanner.Prepare). Liegen die Bilder verstreut zwischen anderen
+    # Dateien, stehen in jedem Paket nur ein oder zwei und die Erkennung
+    # startet fast für jedes Bild neu.
+    hidden static [PendingRead[]] GroupByExtension([System.Collections.Generic.List[PendingRead]]$pending) {
+        $groups = [System.Collections.Generic.Dictionary[string, System.Collections.Generic.List[PendingRead]]]::new(
+            [System.StringComparer]::OrdinalIgnoreCase
+        )
+
+        foreach ($item in $pending) {
+            $list = $null
+
+            if (-not $groups.TryGetValue($item.File.Extension, [ref]$list)) {
+                $list = [System.Collections.Generic.List[PendingRead]]::new()
+                $groups[$item.File.Extension] = $list
+            }
+
+            $list.Add($item)
+        }
+
+        $ordered = [System.Collections.Generic.List[PendingRead]]::new($pending.Count)
+
+        foreach ($list in $groups.Values) {
+            $ordered.AddRange($list)
+        }
+
+        return $ordered.ToArray()
     }
 
 
