@@ -446,11 +446,104 @@ Das Modul exportiert diese Funktionen:
 | `Sync-Files` | Eine Sammlung anhand der Änderungszeit als hinzugefügt, aktualisiert oder unverändert synchronisieren. Gibt die Zähler `Added`, `Updated` und `Unchanged` zurück; löscht keine fehlenden Dateien. |
 | `Search-Query` | Volltextsuche mit optionalem Limit und Dateiendungsfilter ausführen. |
 
+## Begrenzter Verbindungspool für eigene Worker
+
+`Initialize-DatabasePool -DatabasePath ./data/index.sqlite3 -PoolSize 4` öffnet
+1 bis 1024 Verbindungen **seriell** einschließlich Schema/Migration und
+Verbindungseinstellungen. Erst nach erfolgreichem Aufbau darf der zurückgegebene
+C#-Pool mit Thread-Runspaces geteilt werden. Bei einem Aufbaufehler werden bereits
+geöffnete Verbindungen geschlossen. Microsoft.Data.Sqlite-Provider-Pooling bleibt
+`Pooling=False`; der eigene Pool hält genau `PoolSize` offene Verbindungen und
+öffnet beim Ausleihen keine weiteren. Bestehende Repository-Konstruktoren und
+Funktionen bleiben unverändert nutzbar. Der Crawler wird nicht umgestellt.
+
+### Worker-Vertrag und API
+
+PowerShell-Klassen haben unter PowerShell 7.2 Runspace-Affinität. Deshalb **keine
+im Eltern-Runspace erzeugten Repository-/Datei-Instanzen oder PowerShell-Callbacks
+an Worker übergeben**. Nur der C#-Pool und bei Bedarf .NET-Synchronisationsobjekte
+werden per Referenz geteilt (keine Remote-/Prozessjobs mit Serialisierung).
+Jeder Worker lädt die Module und erzeugt seinen Adapter und seine `Datei`-Objekte
+selbst. Der Adapter um die Lease führt keine Schema-Initialisierung aus:
+
+```powershell
+# Am Anfang einer Worker-Skriptdatei (Pfade passend zur Datei wählen):
+using module ./src/Model/Datei.psm1
+using module ./src/Persistence/SqliteDateiRepository.psm1
+param($Pool)
+
+$lease = $Pool.Borrow(5000)
+$repository = $null
+try {
+    $repository = [SqliteDateiRepository]::new($lease)
+    # Datei hier im Worker erzeugen; vorhandene Repository-API verwenden.
+    $paths = $repository.GetPathsUnder('/data/documents')
+}
+finally {
+    if ($null -ne $repository) { $repository.Dispose() }
+    $lease.Dispose() # auch bei fehlgeschlagenem Adapter-Konstruktor
+}
+```
+
+Ein ausführbares Hosted-Runspace-Beispiel steht in
+`tests/fixtures/DatabasePoolWorker.ps1` und `tests/DatabasePool.Tests.ps1`.
+Ein einzelner Adapter bzw. eine Lease gehört immer **einem** Worker; nicht selbst
+parallel benutzen, freigeben oder schließen, während dessen Methoden laufen.
+Die rohe `Connection` ist nur für kontrollierte Diagnose innerhalb derselben
+Lease gedacht: niemals separat schließen, weiterreichen, oder nach Rückgabe
+weiterverwenden. Reader/Kommandos/Transaktionen vor Rückgabe freigeben; die
+Repository-Methoden erledigen dies mit `finally`.
+
+| API | Vertrag |
+|---|---|
+| `Borrow(int timeoutMilliseconds)` | Nichtnegativer Wert; `0` ist ein sofortiger Versuch. Wartet höchstens diese Zeit auf eine freie Verbindung, sonst `TimeoutException`. Kein unendliches Warten. |
+| `Capacity`, `AvailableCount`, `WaitingCount`, `Id`, `IsDisposed` | Kapazität, momentane Diagnosewerte und stabile Poolidentität; Zähler sind keine Reservierung. Wartende erhalten keine FIFO-Garantie. |
+| Lease: `PoolId`, `Connection`, `IsReturned` | Identität und exklusive Verbindung während der Leihdauer. Nach Rückgabe wirft `Connection` eine Ausnahme. |
+| `[SqliteDateiRepository]::new($lease)` | Genau ein Worker-lokaler Adapter je Lease; ein zweiter Adapter wird abgelehnt. |
+| Adapter-`Dispose()` / Lease-`Dispose()` | Gibt die Verbindung exakt einmal zurück; wiederholtes Dispose ist wirkungslos. Nach direkter Lease-Rückgabe ist auch ein noch vorhandener Adapter ungültig, selbst nach erneuter Ausleihe derselben Verbindung. |
+| Pool-`Dispose()` | Idempotent: sperrt neue Ausleihen, weckt Wartende mit `ObjectDisposedException` und schließt freie Verbindungen. Noch ausgeliehene Verbindungen bleiben bis zur Rückgabe nutzbar und werden dann geschlossen, nicht wieder eingereiht. |
+
+Pool-Dispose wartet nicht auf Worker. Vor Löschen/Verschieben/Sichern der Datenbank
+alle Worker beenden und **alle** Leases zurückgeben; verlorene Leases werden nicht
+per Finalizer zurückgeholt. Pool-Dispose ist keine Abbruchfunktion für laufende
+SQL-Kommandos. Der Borrow-Timeout betrifft nur die Pool-Warteschlange und ist
+unabhängig vom SQLite-Busy-/Command-Timeout (Microsoft.Data.Sqlite verwendet für
+Kommandos standardmäßig 30 Sekunden; `busy_timeout=10000` wird wie bisher gesetzt).
+WAL erlaubt überlappende Leser; SQLite serialisiert weiterhin Schreibtransaktionen.
+Ein Pool erhöht also nicht die Anzahl gleichzeitiger SQLite-Schreiber.
+
+### Reproduzierbarer Pool-Benchmark
+
+```powershell
+pwsh -NoProfile -File ./tests/Measure-DatabasePool.ps1 `
+    -Repetitions 10 -WarmupRuns 2 -Operations 500
+# Oder die Ergebnisobjekte in einem PowerShell-Aufruf nach CSV exportieren:
+./tests/Measure-DatabasePool.ps1 | Export-Csv ./pool-results.csv -NoTypeInformation
+```
+
+Beide Modi führen dasselbe `SELECT COUNT(*) FROM files_metadata` in einer isolierten
+lokalen Datenbank aus. `Pooled` leiht eine bereits offene Verbindung aus;
+`RepeatedOpen` erzeugt/öffnet/schließt je Operation eine neue Verbindung mit exakt
+demselben Connection-String und deaktiviertem Provider-Pooling. Schemaaufbau und
+Pool-Erstellung liegen außerhalb der Messung; es werden keine Schemaarbeiten je
+Operation und keine Crawler-/Adapter-Laufzeiten gemessen. Die Reihenfolge wechselt
+pro Wiederholung. Warm-ups werden verworfen; jede Ergebniszeile enthält Parameter,
+Versionen, Laufzeit und Durchsatz (Operationen/Sekunde). Datenträger-/OS-Caches
+bleiben warm. Dies ist ein serieller Open/Reuse-Mikrobenchmark, kein Nachweis höherer
+paralleler Schreibleistung. Gleiche Umgebung/Parameter verwenden; keine fragile
+Mindestbeschleunigung im Test erzwingen. Der Benchmark ist kein Pester-Test.
+
 ## Tests
 
 ```powershell
-Invoke-Pester ./tests/SqliteDateiRepository.Tests.ps1
+Invoke-Pester -Path ./tests
 ```
+
+CI entdeckt rekursiv alle `*.Tests.ps1`. Die Pooltests verwenden echte Runspaces,
+eine gemeinsame Poolreferenz, Countdown/Gates und begrenzte Wartezeiten. Sie prüfen
+überlappende Leases vor Öffnen des Gates, exklusive Verbindungen, Wiederverwendung,
+Metadaten/FTS nach parallelen Updates/Löschungen, Timeout, wartende Ausleiher,
+Rückgabe nach Fehlern sowie Shutdown mit ausstehenden Leases.
 
 Die Tests legen temporäre Datenbanken an und prüfen unter anderem Transaktionen
 und Rollbacks, Suche und Snippets, Endungsfilter, Synchronisierung,

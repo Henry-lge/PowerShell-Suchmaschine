@@ -1,5 +1,6 @@
 /lib/*
 /data/*
 
+.tmp
 .vscode/*
 .DS_Store
