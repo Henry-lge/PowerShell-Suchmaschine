@@ -1,10 +1,12 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="using:FileSearcherApp"
         x:Class="FileSearcherApp.MainWindow"
         Title="Dateisuche über Powershell" Width="650" Height="450"
         Icon="avares://FileSearcherApp/GUIAssets/logo.png"
         FontFamily="Consolas"
         Background="#0c3835">
+<<<<<<< HEAD
 
     <Grid Margin="20">
         <Grid.RowDefinitions>
@@ -84,4 +86,48 @@
                  ScrollViewer.VerticalScrollBarVisibility="Auto"
                  ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
     </Grid>
+=======
+    
+    <StackPanel Margin="20" Spacing="10">
+        <TextBlock Text="Powershell Suchmaschine" FontSize="18" FontWeight="Bold"/>
+        
+        <TextBox x:Name="SearchBox" Watermark="Suchbegriff eingeben (z. B. *.txt)..." />
+        
+        <Button Content="Suche starten" Click="OnSearchClicked" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
+        
+        <TextBlock Text="Ergebnisse:" FontWeight="SemiBold" Margin="0,10,0,0"/>
+        <ListBox x:Name="ResultsList" Height="250">
+        <ListBox.Styles>
+            <Style Selector="ListBoxItem">
+            <Setter Property="Padding" Value="0"/>
+            </Style>
+        </ListBox.Styles>
+
+        <ListBox.DataTemplates>
+            <DataTemplate DataType="local:SearchHit">
+            <Border Background="Transparent"
+                    HorizontalAlignment="Stretch"
+                    Padding="12,9"
+                    ToolTip.ShowDelay="400"
+                    ToolTip.Placement="Right">
+                <ToolTip.Tip>
+                <StackPanel Spacing="6" MaxWidth="480">
+                    <TextBlock Text="{Binding FileName}" FontWeight="Bold"/>
+                    <TextBlock Text="{Binding Path}" Opacity="0.7"
+                            TextWrapping="Wrap" FontSize="11"/>
+                    <TextBlock Text="{Binding LastWriteText}" Opacity="0.7" FontSize="11"/>
+                    <Separator/>
+                    <TextBlock Inlines="{Binding Preview, Converter={x:Static local:HighlightConverter.Instance}}"
+                                TextWrapping="Wrap"
+                                MaxHeight="220"
+                                TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
+                </ToolTip.Tip>
+                <TextBlock Text="{Binding}" TextTrimming="CharacterEllipsis"/>
+            </Border>
+            </DataTemplate>
+        </ListBox.DataTemplates>
+        </ListBox>
+    </StackPanel>
+>>>>>>> origin/GUI/GUI-FilePreviewMarh
 </Window>
