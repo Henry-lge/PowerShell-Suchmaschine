@@ -17,6 +17,7 @@ namespace FileSearcherApp
             SearchBox.KeyDown += OnSearchKeyDown;
         }
 
+<<<<<<< HEAD
         private void OnSearchKeyDown(object? sender, KeyEventArgs e)
         {
             if (e.Key == Key.Enter)
@@ -26,6 +27,8 @@ namespace FileSearcherApp
             }
         }
 
+=======
+>>>>>>> origin/GUI/GUI-FM-0
         private async void OnSearchClicked(
             object? sender,
             RoutedEventArgs e)
