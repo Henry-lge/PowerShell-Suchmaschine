@@ -22,10 +22,31 @@ Describe "SqliteDateiRepository" {
             return $file
         }
 
+        function Invoke-TestSql {
+            param([Parameter(Mandatory)][string]$Sql)
+
+            $connectionProperty = [SqliteDateiRepository].GetProperty(
+                "_connection",
+                [System.Reflection.BindingFlags]"Instance,Public,NonPublic"
+            )
+            $command = $connectionProperty.GetValue($script:database).CreateCommand()
+            try {
+                $command.CommandText = $Sql
+                return $command.ExecuteScalar()
+            }
+            finally {
+                $command.Dispose()
+            }
+        }
+
         $script:testRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
             "powershell-suchmaschine-tests-" + [guid]::NewGuid().ToString("N")
         )
-        $script:assemblyPath = Join-Path $script:testRoot "sqlite"
+        # Die SQLite-Runtime liegt im Repository (lib/sqlite) und wird von
+        # Install-Sqlite.ps1 bei Bedarf eingerichtet; ein eigener Temp-Ordner
+        # scheitert unter Windows in AfterAll, weil die geladene native
+        # e_sqlite3.dll bis zum Prozessende gesperrt ist.
+        $script:assemblyPath = Join-Path (Join-Path $PSScriptRoot "..") "lib/sqlite"
         [System.IO.Directory]::CreateDirectory($script:testRoot) | Out-Null
     }
 
@@ -77,6 +98,32 @@ Describe "SqliteDateiRepository" {
         $stored.HasContent | Should -BeTrue
     }
 
+    It "reconstructs the original path casing while exposing a normalized extension" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot "Notes.TXT")
+
+        $script:database.Save($file)
+        $stored = $script:database.Get($file.Path)
+
+        $stored.Path | Should -Be $file.Path
+        $stored.Name | Should -Be "Notes.TXT"
+        $stored.Extension | Should -Be ".txt"
+    }
+
+    It "compares file paths case-insensitively except on Linux" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot "CaseSensitive.txt")
+        $script:database.Save($file)
+
+        $alternateCasePath = Join-Path $script:testRoot "CASESENSITIVE.TXT"
+        $stored = $script:database.Get($alternateCasePath)
+
+        if ($global:IsLinux) {
+            $stored | Should -BeNullOrEmpty
+        }
+        else {
+            $stored.Path | Should -Be $file.Path
+        }
+    }
+
     It "updates an existing path instead of creating a duplicate" {
         $file = New-TestDatei -Path (Join-Path $script:testRoot "notes.txt")
         $script:database.Save($file)
@@ -91,6 +138,58 @@ Describe "SqliteDateiRepository" {
             Should -Be 1
         (Search-Query -Database $script:database -Query "originalmarker").Count |
             Should -Be 0
+    }
+
+    It "uses metadata IDs as FTS rowids despite gaps and updates" {
+        $metadataOnly = New-TestDatei -Path (Join-Path $script:testRoot "metadata.txt")
+        $metadataOnly.HasContent = $false
+        $file = New-TestDatei -Path (Join-Path $script:testRoot "indexed.txt")
+        $script:database.SaveBatch([Datei[]]@($metadataOnly, $file))
+        $script:database.Save($file)
+
+        (Invoke-TestSql "SELECT rowid FROM files_fts WHERE filename = 'indexed.txt';") |
+            Should -Be 2
+        (Invoke-TestSql "SELECT count(*) FROM files_fts WHERE rowid = file_id;") |
+            Should -Be 2
+        (Search-Query -Database $script:database -Query "originalmarker").File.Path |
+            Should -Be $file.Path
+
+        $file.HasContent = $false
+        $script:database.Save($file)
+        (Invoke-TestSql "SELECT count(*) FROM files_fts;") | Should -Be 2
+        (Search-Query -Database $script:database -Query "originalmarker" -SearchMode Content) |
+            Should -BeNullOrEmpty
+        (Search-Query -Database $script:database -Query "indexed" -SearchMode FileName).File.Path |
+            Should -Be $file.Path
+        $script:database.Get($file.Path).HasContent | Should -BeFalse
+    }
+
+    It "searches filenames, content, or both and indexes metadata-only filenames" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot "filenameonlymarker.txt")
+        $file.Content = "bodyonlymarker"
+        $script:database.Save($file)
+
+        $metadataOnly = New-TestDatei -Path (Join-Path $script:testRoot "metadataonlymarker.bin")
+        $metadataOnly.HasContent = $false
+        $metadataOnly.Content = $null
+        $script:database.Save($metadataOnly)
+
+        $filenameResults = Search-Query -Database $script:database `
+            -Query "filenameonlymarker" -SearchMode FileName
+        $filenameResults.File.Path | Should -Be $file.Path
+        $filenameResults.Snippet | Should -Match "\[filenameonlymarker\]"
+        (Search-Query -Database $script:database -Query "filenameonlymarker").File.Path |
+            Should -Be $file.Path
+        (Search-Query -Database $script:database -Query "filenameonlymarker" `
+            -SearchMode Content) | Should -BeNullOrEmpty
+        (Search-Query -Database $script:database -Query "bodyonlymarker" `
+            -SearchMode FileName) | Should -BeNullOrEmpty
+        (Search-Query -Database $script:database -Query "bodyonlymarker" `
+            -SearchMode Content).File.Path | Should -Be $file.Path
+        (Search-Query -Database $script:database -Query "metadataonlymarker" `
+            -SearchMode FileName).File.Path | Should -Be $metadataOnly.Path
+        (Search-Query -Database $script:database -Query "bodyonlymarker" `
+            -SearchMode Both).File.Path | Should -Be $file.Path
     }
 
     It "indexes full text and returns a snippet and positive relevance score" {
@@ -143,6 +242,57 @@ Describe "SqliteDateiRepository" {
             Should -Be 0
     }
 
+    It "removes multiple batches including duplicate and missing paths" {
+        $files = [Datei[]]@(for ($index = 0; $index -lt 605; $index++) {
+            New-TestDatei -Path (Join-Path $script:testRoot "remove-$index.txt")
+        })
+        $keep = New-TestDatei -Path (Join-Path $script:testRoot "keep.txt")
+        $script:database.SaveBatch($files + [Datei[]]@($keep))
+        $paths = [string[]]@($files | ForEach-Object { $_.Path })
+        $paths += @($files[0].Path, (Join-Path $script:testRoot "missing.txt"))
+
+        $script:database.RemoveBatch($paths)
+        $script:database.RemoveBatch([string[]]@())
+
+        $script:database.GetPathsUnder($script:testRoot) | Should -HaveCount 1
+        (Invoke-TestSql "SELECT count(*) FROM files_fts;") | Should -Be 1
+        (Search-Query -Database $script:database -Query "originalmarker").File.Path |
+            Should -Be $keep.Path
+    }
+
+    It "validates all removal paths before deleting anything" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot "keep.txt")
+        $script:database.Save($file)
+
+        { $script:database.RemoveBatch([string[]]@($file.Path, "")) } | Should -Throw
+
+        $script:database.Get($file.Path) | Should -Not -BeNullOrEmpty
+        (Invoke-TestSql "SELECT count(*) FROM files_fts;") | Should -Be 1
+    }
+
+    It "rolls back FTS and metadata deletions across removal batches" {
+        $files = [Datei[]]@(for ($index = 0; $index -lt 301; $index++) {
+            New-TestDatei -Path (Join-Path $script:testRoot "rollback-$index.txt")
+        })
+        $script:database.SaveBatch($files)
+        [void](Invoke-TestSql @"
+CREATE TRIGGER reject_removal BEFORE DELETE ON files_metadata
+WHEN OLD.filename = 'rollback-300'
+BEGIN
+    SELECT RAISE(ABORT, 'rejected by removal test');
+END;
+"@)
+
+        {
+            $script:database.RemoveBatch([string[]]@($files | ForEach-Object { $_.Path }))
+        } | Should -Throw "*rejected by removal test*"
+
+        (Invoke-TestSql "SELECT count(*) FROM files_metadata;") | Should -Be 301
+        (Invoke-TestSql "SELECT count(*) FROM files_fts;") | Should -Be 301
+        @(Search-Query -Database $script:database -Query "originalmarker" -Limit 1000) |
+            Should -HaveCount 301
+    }
+
     It "returns paths under a folder without matching similarly prefixed folders" {
         $nested = New-TestDatei -Path (
             Join-Path $script:testRoot "nested/inside.txt"
@@ -158,6 +308,40 @@ Describe "SqliteDateiRepository" {
 
         $paths | Should -HaveCount 1
         $paths[0] | Should -Be $nested.Path
+    }
+
+    It "filters wildcard characters literally when finding paths under a folder" {
+        $wildcardFolder = New-TestDatei -Path (
+            Join-Path $script:testRoot "wild%_scope/inside.txt"
+        )
+        $notUnderFolder = New-TestDatei -Path (
+            Join-Path $script:testRoot "wildXXscope/outside.txt"
+        )
+        $script:database.SaveBatch([Datei[]]@($wildcardFolder, $notUnderFolder))
+
+        $paths = $script:database.GetPathsUnder(
+            (Join-Path $script:testRoot "wild%_scope")
+        )
+
+        $paths | Should -HaveCount 1
+        $paths[0] | Should -Be $wildcardFolder.Path
+    }
+
+    It "retrieves many paths in bounded SQLite batches" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot "bulk-existing.txt")
+        $script:database.Save($file)
+        $paths = [System.Collections.Generic.List[string]]::new()
+        $paths.Add($file.Path)
+        for ($index = 0; $index -lt 605; $index++) {
+            $paths.Add((Join-Path $script:testRoot "missing-$index.txt"))
+        }
+
+        $stored = $script:database.GetMany($paths.ToArray())
+
+        $stored.Count | Should -Be 1
+        $stored[$file.Path].Name | Should -Be "bulk-existing.txt"
+        { $script:database.GetMany([string[]]@($file.Path, "")) } |
+            Should -Throw
     }
 
     It "uses a transaction to persist a batch and rejects invalid records" {
@@ -179,7 +363,7 @@ Describe "SqliteDateiRepository" {
         $command.CommandText = @"
 CREATE TRIGGER reject_test_file
 BEFORE INSERT ON files_metadata
-WHEN NEW.filename = 'reject.txt'
+WHEN NEW.filename = 'reject'
 BEGIN
     SELECT RAISE(ABORT, 'rejected by transaction test');
 END;
@@ -225,6 +409,91 @@ END;
 
         $results | Should -HaveCount 1
         $results[0].File.Path | Should -Be $file.Path
+    }
+
+    It "keeps the current FTS schema and indexed data when reopened" {
+        $metadataOnly = New-TestDatei -Path (Join-Path $script:testRoot "metadata.txt")
+        $metadataOnly.HasContent = $false
+        $first = New-TestDatei -Path (Join-Path $script:testRoot "first.txt")
+        $second = New-TestDatei -Path (Join-Path $script:testRoot "second.txt")
+        $script:database.SaveBatch([Datei[]]@($metadataOnly, $first, $second))
+        [void](Invoke-TestSql @"
+CREATE TRIGGER guard_fts_migration BEFORE INSERT ON files_fts_data
+BEGIN
+    SELECT RAISE(ABORT, 'unexpected FTS rebuild');
+END;
+"@)
+        $script:database.Dispose()
+        $script:database = Initialize-Database `
+            -DatabasePath $script:databasePath `
+            -AssemblyPath $script:assemblyPath
+
+        (Invoke-TestSql "SELECT count(*) FROM pragma_table_info('files_fts') WHERE name = 'filename';") |
+            Should -Be 1
+        (Invoke-TestSql "SELECT count(*) FROM files_fts WHERE rowid != file_id;") |
+            Should -Be 0
+        (Search-Query -Database $script:database -Query "metadata" -SearchMode FileName).File.Path |
+            Should -Be $metadataOnly.Path
+        (Search-Query -Database $script:database -Query "originalmarker").Count |
+            Should -Be 2
+        (Invoke-TestSql "SELECT count(*) FROM sqlite_master WHERE name = 'guard_fts_migration';") |
+            Should -Be 1
+        [void](Invoke-TestSql "DROP TRIGGER guard_fts_migration;")
+
+        $first.Content = "updatedmarker"
+        $script:database.Save($first)
+        (Search-Query -Database $script:database -Query "originalmarker").File.Path |
+            Should -Be $second.Path
+        (Search-Query -Database $script:database -Query "updatedmarker").File.Path |
+            Should -Be $first.Path
+        $script:database.Remove($second.Path)
+        (Search-Query -Database $script:database -Query "originalmarker").Count | Should -Be 0
+        (Invoke-TestSql "SELECT count(*) FROM files_fts;") | Should -Be 2
+    }
+
+    It "rejects an FTS schema without the filename column" {
+        [void](Invoke-TestSql @"
+DROP TABLE files_fts;
+CREATE VIRTUAL TABLE files_fts USING fts5(
+    file_id UNINDEXED,
+    content,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+"@)
+
+        $script:database.Dispose()
+        {
+            Initialize-Database `
+                -DatabasePath $script:databasePath `
+                -AssemblyPath $script:assemblyPath
+        } | Should -Throw "*unsupported FTS schema*"
+    }
+
+    It "rejects the legacy full-path schema with an actionable error" {
+        $connectionProperty = [SqliteDateiRepository].GetProperty(
+            "_connection",
+            [System.Reflection.BindingFlags]"Instance,Public,NonPublic"
+        )
+        $connection = $connectionProperty.GetValue($script:database)
+        $command = $connection.CreateCommand()
+        $command.CommandText = @"
+DROP TABLE files_fts;
+DROP TABLE files_metadata;
+CREATE TABLE files_metadata (
+    id INTEGER PRIMARY KEY,
+    path_key TEXT NOT NULL UNIQUE,
+    path TEXT NOT NULL
+);
+"@
+        [void]$command.ExecuteNonQuery()
+        $command.Dispose()
+
+        $script:database.Dispose()
+        {
+            Initialize-Database `
+                -DatabasePath $script:databasePath `
+                -AssemblyPath $script:assemblyPath
+        } | Should -Throw "*unsupported legacy schema*"
     }
 
     It "validates the search limit" {

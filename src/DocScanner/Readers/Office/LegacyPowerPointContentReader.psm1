@@ -1,7 +1,7 @@
 using module "../ContentReader.psm1"
 using module "../Shared/CompoundFile.psm1"
 
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # =============================================================================
@@ -24,6 +24,7 @@ using module "../Shared/CompoundFile.psm1"
 # Die Masterfolien (MainMaster 0x03F8) enthalten nur Platzhaltertexte wie
 # "Click to edit Master title style" und werden übersprungen.
 # Verschlüsselte Präsentationen liefern keinen Text.
+[NoRunspaceAffinity()]
 class LegacyPowerPointContentReader : ContentReader {
 
     hidden static [int]$TextCharsAtom = 0x0FA0

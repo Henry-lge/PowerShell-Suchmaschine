@@ -20,10 +20,10 @@ namespace FileSearcherApp
                 var splashScreen = new SplashScreenWindow();
                 desktop.MainWindow = splashScreen;
                 splashScreen.Show();
-                //Hier könnte man dann vielleicht den Crawlerscan durchführen
+                // Hier könnte man dann vielleicht den Crawlerscan durchführen
 
-                // 2. Hier im Hintergrund Aufgaben erledigen (z.B. PowerShell vorbereiten, Daten laden)
-                await Task.Delay(4000); // Simuliert 2 Sekunden Ladezeit
+                // 2. Im Hintergrund Aufgaben erledigen (z.B. PowerShell vorbereiten, Daten laden)
+                await Task.Delay(4000); // Simuliert 4 Sekunden Ladezeit
 
                 // 3. Echtes Hauptfenster öffnen
                 var mainWindow = new MainWindow();

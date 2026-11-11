@@ -2,7 +2,7 @@ using module "../ContentReader.psm1"
 using module "../Shared/XmlText.psm1"
 using module "../Shared/OpenXml.psm1"
 
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # =============================================================================
@@ -24,6 +24,7 @@ using module "../Shared/OpenXml.psm1"
 # Textfelder werden doppelt gespeichert: als moderne Zeichnung (<mc:Choice>)
 # und als Ersatz für alte Word-Versionen (<mc:Fallback>). Der Ersatz wird
 # übersprungen.
+[NoRunspaceAffinity()]
 class WordContentReader : ContentReader {
 
     hidden static [XmlTextRules]$TextRules = [WordContentReader]::CreateRules()

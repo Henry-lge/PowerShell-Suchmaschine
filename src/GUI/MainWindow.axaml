@@ -55,7 +55,9 @@
                 HorizontalAlignment="Left"
                 Background="#001816"
                 Margin="0,0,0,10">
-            <TextBox Text="" 
+            <!-- HIER muss x:Name="SearchBox" hin: -->
+            <TextBox x:Name="SearchBox"
+                     Text="" 
                      Watermark="Suchbegriff eingeben..."
                      Background="#001816"
                      BorderBrush="Transparent"
@@ -64,7 +66,7 @@
                      Margin="4" />
         </Border>
                 
-        <!-- Zeile 3: Such-Button -->
+        <!-- Zeile 3: Such-Button (x:Name hier ENTFERNT) -->
         <Button Grid.Row="3" 
                 Content="Suche starten" 
                 Click="OnSearchClicked" 

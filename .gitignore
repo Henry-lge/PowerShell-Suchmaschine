@@ -1,5 +1,9 @@
-/lib/sqlite/
-/data/*.sqlite3
-/data/*.sqlite3-journal
-/data/*.sqlite3-shm
-/data/*.sqlite3-wal
+/lib/*
+/data/*
+
+.tmp
+.vscode/*
+.DS_Store
+
+/src/GUI/obj
+/src/GUI/bin

@@ -4,6 +4,10 @@ using module "./DateiRepository.psm1"
 
 #requires -Version 7.2
 
+if (-not ('Suchmaschine.Persistence.DatabasePool' -as [type])) {
+    Add-Type -Path (Join-Path $PSScriptRoot 'DatabasePool.cs') -ErrorAction Stop
+}
+
 class SqliteProvider {
     static [void] Load([string]$assemblyPath) {
         $assemblies = @(
@@ -33,6 +37,26 @@ class SqliteProvider {
 class SqliteDateiRepository : DateiRepository {
     hidden [object]$_connection
     hidden [bool]$_disposed = $false
+    hidden [object]$_lease
+
+    # Construct this adapter in the borrowing worker, never in the parent runspace.
+    SqliteDateiRepository([object]$lease) {
+        if ($null -eq $lease -or $lease.GetType().FullName -ne 'Suchmaschine.Persistence.DatabaseLease') {
+            throw 'A DatabaseLease is required.'
+        }
+        $this._connection = $lease.ClaimRepositoryConnection()
+        $this._lease = $lease
+    }
+
+    # Used only during serial pool initialization to transfer ownership.
+    hidden [object] DetachConnection() {
+        $this.EnsureOpen()
+        if ($null -ne $this._lease) { throw 'Cannot detach a leased connection.' }
+        $connection = $this._connection
+        $this._connection = $null
+        $this._disposed = $true
+        return $connection
+    }
 
     SqliteDateiRepository([string]$databasePath, [string]$assemblyPath) {
         if ([string]::IsNullOrWhiteSpace($databasePath)) {
@@ -58,6 +82,9 @@ class SqliteDateiRepository : DateiRepository {
             $builderType.GetProperty("Mode").PropertyType,
             "ReadWriteCreate"
         )
+        # Ohne Pooling gibt Dispose() den Datei-Handle sofort frei. Windows
+        # verweigert andernfalls das Loeschen der Datenbank nach dem Dispose.
+        $builder.Pooling = $false
 
         $connectionType = [type]::GetType(
             "Microsoft.Data.Sqlite.SqliteConnection, Microsoft.Data.Sqlite",
@@ -79,13 +106,19 @@ class SqliteDateiRepository : DateiRepository {
 
     [Datei] Get([string]$path) {
         $this.EnsureOpen()
-        $pathKey = $this.GetPathKey($path)
+        $parts = $this.GetPathParts($path)
+        $collation = $this.GetPathCollation()
         $command = $this.NewCommand(
-            "SELECT path, filename, extension, size_bytes, creation_time_utc_ticks, " +
+            "SELECT directory_path, filename, extension, size_bytes, creation_time_utc_ticks, " +
             "last_write_time_utc_ticks, indexed_at_utc_ticks, has_content, is_cloud_only " +
-            "FROM files_metadata WHERE path_key = `$pathParameter;"
+            "FROM files_metadata " +
+            "WHERE directory_path = `$directoryParameter COLLATE $collation " +
+            "AND filename = `$filenameParameter COLLATE $collation " +
+            "AND extension = `$extensionParameter COLLATE $collation;"
         )
-        [void]$command.Parameters.AddWithValue('$pathParameter', $pathKey)
+        [void]$command.Parameters.AddWithValue('$directoryParameter', $parts.Directory)
+        [void]$command.Parameters.AddWithValue('$filenameParameter', $parts.Name)
+        [void]$command.Parameters.AddWithValue('$extensionParameter', $parts.Extension)
 
         try {
             $reader = $command.ExecuteReader()
@@ -103,6 +136,95 @@ class SqliteDateiRepository : DateiRepository {
         finally {
             $command.Dispose()
         }
+    }
+
+    [System.Collections.Generic.Dictionary[string, Datei]] GetMany([string[]]$paths) {
+        $this.EnsureOpen()
+        $files = [System.Collections.Generic.Dictionary[string, Datei]]::new(
+            [PathUtil]::GetComparer()
+        )
+        if ($paths.Count -eq 0) {
+            return $files
+        }
+
+        $pathParts = [System.Collections.Generic.List[object]]::new()
+        $seenPaths = [System.Collections.Generic.HashSet[string]]::new(
+            [PathUtil]::GetComparer()
+        )
+        foreach ($path in $paths) {
+            if ([string]::IsNullOrWhiteSpace($path)) {
+                throw "Each path must not be empty."
+            }
+
+            $normalizedPath = [PathUtil]::Normalize($path)
+            if (-not $seenPaths.Add($normalizedPath)) {
+                continue
+            }
+
+            $pathParts.Add($this.GetPathParts($normalizedPath))
+        }
+
+        $collation = $this.GetPathCollation()
+        $batchSize = 300
+        for ($offset = 0; $offset -lt $pathParts.Count; $offset += $batchSize) {
+            $count = [Math]::Min($batchSize, $pathParts.Count - $offset)
+            $values = [System.Collections.Generic.List[string]]::new()
+            $command = $null
+            try {
+                $command = $this._connection.CreateCommand()
+                for ($index = 0; $index -lt $count; $index++) {
+                    $parameterIndex = $index * 3
+                    $values.Add(
+                        "(`$directory$parameterIndex, `$filename$parameterIndex, `$extension$parameterIndex)"
+                    )
+                    $parts = $pathParts[$offset + $index]
+                    [void]$command.Parameters.AddWithValue(
+                        "`$directory$parameterIndex",
+                        $parts.Directory
+                    )
+                    [void]$command.Parameters.AddWithValue(
+                        "`$filename$parameterIndex",
+                        $parts.Name
+                    )
+                    [void]$command.Parameters.AddWithValue(
+                        "`$extension$parameterIndex",
+                        $parts.Extension
+                    )
+                }
+
+                $command.CommandText = @"
+WITH requested(directory_path, filename, extension) AS (
+    VALUES $($values -join ", ")
+)
+SELECT metadata.directory_path, metadata.filename, metadata.extension,
+    metadata.size_bytes, metadata.creation_time_utc_ticks,
+    metadata.last_write_time_utc_ticks, metadata.indexed_at_utc_ticks,
+    metadata.has_content, metadata.is_cloud_only
+FROM requested
+JOIN files_metadata AS metadata
+    ON metadata.directory_path = requested.directory_path COLLATE $collation
+    AND metadata.filename = requested.filename COLLATE $collation
+    AND metadata.extension = requested.extension COLLATE $collation;
+"@
+                $reader = $command.ExecuteReader()
+                try {
+                    while ($reader.Read()) {
+                        $file = $this.ReadDatei($reader)
+                        $files[$file.Path] = $file
+                    }
+                }
+                finally {
+                    $reader.Dispose()
+                }
+            }
+            finally {
+                if ($null -ne $command) {
+                    $command.Dispose()
+                }
+            }
+        }
+
+        return $files
     }
 
     [void] Save([Datei]$datei) {
@@ -123,9 +245,21 @@ class SqliteDateiRepository : DateiRepository {
         }
 
         $transaction = $this._connection.BeginTransaction()
+        $metadataCommand = $null
+        $deleteCommand = $null
+        $insertCommand = $null
         try {
+            $metadataCommand = $this.NewSaveMetadataCommand($transaction)
+            $deleteCommand = $this.NewSaveFtsDeleteCommand($transaction)
+            $insertCommand = $this.NewSaveFtsInsertCommand($transaction)
+
             foreach ($datei in $dateien) {
-                $this.SaveWithinTransaction($datei, $transaction)
+                $this.SaveWithinTransaction(
+                    $datei,
+                    $metadataCommand,
+                    $deleteCommand,
+                    $insertCommand
+                )
             }
             $transaction.Commit()
         }
@@ -134,38 +268,125 @@ class SqliteDateiRepository : DateiRepository {
             throw
         }
         finally {
+            if ($null -ne $insertCommand) {
+                $insertCommand.Dispose()
+            }
+            if ($null -ne $deleteCommand) {
+                $deleteCommand.Dispose()
+            }
+            if ($null -ne $metadataCommand) {
+                $metadataCommand.Dispose()
+            }
             $transaction.Dispose()
         }
     }
 
     [void] Remove([string]$path) {
+        $this.RemoveBatch([string[]]@($path))
+    }
+
+    [void] RemoveBatch([string[]]$paths) {
         $this.EnsureOpen()
-        $pathKey = $this.GetPathKey($path)
+        if ($null -eq $paths -or $paths.Count -eq 0) {
+            return
+        }
+
+        $pathParts = [System.Collections.Generic.List[object]]::new()
+        $seenPaths = [System.Collections.Generic.HashSet[string]]::new(
+            [PathUtil]::GetComparer()
+        )
+        foreach ($path in $paths) {
+            $parts = $this.GetPathParts($path)
+            $normalizedPath = [PathUtil]::Normalize($path)
+            if ($seenPaths.Add($normalizedPath)) {
+                $pathParts.Add($parts)
+            }
+        }
+
+        if ($pathParts.Count -eq 0) {
+            return
+        }
+
+        $collation = $this.GetPathCollation()
         $transaction = $this._connection.BeginTransaction()
 
         try {
-            $ftsCommand = $this.NewCommand(
-                "DELETE FROM files_fts WHERE path_key = `$pathParameter;",
-                $transaction
-            )
-            [void]$ftsCommand.Parameters.AddWithValue('$pathParameter', $pathKey)
-            try {
-                [void]$ftsCommand.ExecuteNonQuery()
-            }
-            finally {
-                $ftsCommand.Dispose()
-            }
+            $batchSize = 300
+            for ($offset = 0; $offset -lt $pathParts.Count; $offset += $batchSize) {
+                $count = [Math]::Min($batchSize, $pathParts.Count - $offset)
+                $values = [System.Collections.Generic.List[string]]::new()
+                for ($index = 0; $index -lt $count; $index++) {
+                    $parameterIndex = $index * 3
+                    $values.Add(
+                        "(`$directory$parameterIndex, `$filename$parameterIndex, `$extension$parameterIndex)"
+                    )
+                }
 
-            $metadataCommand = $this.NewCommand(
-                "DELETE FROM files_metadata WHERE path_key = `$pathParameter;",
-                $transaction
-            )
-            [void]$metadataCommand.Parameters.AddWithValue('$pathParameter', $pathKey)
-            try {
-                [void]$metadataCommand.ExecuteNonQuery()
-            }
-            finally {
-                $metadataCommand.Dispose()
+                $requestedCte = @"
+WITH requested(directory_path, filename, extension) AS (
+    VALUES $($values -join ", ")
+)
+"@
+                $ftsCommand = $null
+                $metadataCommand = $null
+                try {
+                    $ftsSql = @"
+$requestedCte
+DELETE FROM files_fts
+WHERE rowid IN (
+    SELECT metadata.id
+    FROM files_metadata AS metadata
+    JOIN requested
+        ON metadata.directory_path = requested.directory_path COLLATE $collation
+        AND metadata.filename = requested.filename COLLATE $collation
+        AND metadata.extension = requested.extension COLLATE $collation
+);
+"@
+                    $metadataSql = @"
+$requestedCte
+DELETE FROM files_metadata
+WHERE id IN (
+    SELECT metadata.id
+    FROM files_metadata AS metadata
+    JOIN requested
+        ON metadata.directory_path = requested.directory_path COLLATE $collation
+        AND metadata.filename = requested.filename COLLATE $collation
+        AND metadata.extension = requested.extension COLLATE $collation
+);
+"@
+                    $ftsCommand = $this.NewCommand($ftsSql, $transaction)
+                    $metadataCommand = $this.NewCommand($metadataSql, $transaction)
+
+                    for ($index = 0; $index -lt $count; $index++) {
+                        $parameterIndex = $index * 3
+                        $parts = $pathParts[$offset + $index]
+                        foreach ($command in @($ftsCommand, $metadataCommand)) {
+                            [void]$command.Parameters.AddWithValue(
+                                "`$directory$parameterIndex",
+                                $parts.Directory
+                            )
+                            [void]$command.Parameters.AddWithValue(
+                                "`$filename$parameterIndex",
+                                $parts.Name
+                            )
+                            [void]$command.Parameters.AddWithValue(
+                                "`$extension$parameterIndex",
+                                $parts.Extension
+                            )
+                        }
+                    }
+
+                    [void]$ftsCommand.ExecuteNonQuery()
+                    [void]$metadataCommand.ExecuteNonQuery()
+                }
+                finally {
+                    if ($null -ne $metadataCommand) {
+                        $metadataCommand.Dispose()
+                    }
+                    if ($null -ne $ftsCommand) {
+                        $ftsCommand.Dispose()
+                    }
+                }
             }
 
             $transaction.Commit()
@@ -182,14 +403,27 @@ class SqliteDateiRepository : DateiRepository {
     [string[]] GetPathsUnder([string]$folderPath) {
         $this.EnsureOpen()
         $folder = [PathUtil]::Normalize($folderPath)
+        $prefix = $folder
+        if (-not [System.IO.Path]::EndsInDirectorySeparator($prefix)) {
+            $prefix += [System.IO.Path]::DirectorySeparatorChar
+        }
         $paths = [System.Collections.Generic.List[string]]::new()
-        $command = $this.NewCommand("SELECT path FROM files_metadata;")
+        $command = $this.NewCommand(
+            "SELECT directory_path, filename, extension FROM files_metadata " +
+            "WHERE directory_path = `$folderParameter " +
+            "OR directory_path IS NOT NULL;"
+        )
+        [void]$command.Parameters.AddWithValue('$folderParameter', $folder)
 
         try {
             $reader = $command.ExecuteReader()
             try {
                 while ($reader.Read()) {
-                    $path = [string]$reader["path"]
+                    $path = $this.GetFullPath(
+                        [string]$reader["directory_path"],
+                        [string]$reader["filename"],
+                        [string]$reader["extension"]
+                    )
                     if ([PathUtil]::IsSameOrUnder($path, $folder)) {
                         $paths.Add($path)
                     }
@@ -211,7 +445,19 @@ class SqliteDateiRepository : DateiRepository {
         [int]$limit = 100,
         [string]$extension = $null
     ) {
+        return $this.Search($query, $limit, $extension, "Both")
+    }
+
+    [object[]] Search(
+        [string]$query,
+        [int]$limit,
+        [string]$extension,
+        [string]$searchMode
+    ) {
         $this.EnsureOpen()
+        if ($searchMode -notin @("FileName", "Content", "Both")) {
+            throw "Search mode must be FileName, Content, or Both."
+        }
         if ([string]::IsNullOrWhiteSpace($query)) {
             return @()
         }
@@ -226,14 +472,33 @@ class SqliteDateiRepository : DateiRepository {
             }
         }
 
+        $searchCondition = switch ($searchMode) {
+            "FileName" { "files_fts.filename MATCH `$queryParameter" }
+            "Content" { "files_fts.content MATCH `$queryParameter" }
+            "Both" { "files_fts MATCH `$queryParameter" }
+        }
+        $snippetExpression = switch ($searchMode) {
+            "FileName" {
+                "snippet(files_fts, 1, '[', ']', '...', 16)"
+            }
+            "Content" {
+                "snippet(files_fts, 2, '[', ']', '...', 16)"
+            }
+            "Both" {
+                "CASE WHEN highlight(files_fts, 1, char(1), char(2)) <> files_fts.filename " +
+                "THEN snippet(files_fts, 1, '[', ']', '...', 16) " +
+                "ELSE snippet(files_fts, 2, '[', ']', '...', 16) END"
+            }
+        }
         $command = $this.NewCommand(
-            "SELECT m.path, m.filename, m.extension, m.size_bytes, " +
+            "SELECT m.directory_path, m.filename, m.extension, m.size_bytes, " +
             "m.creation_time_utc_ticks, m.last_write_time_utc_ticks, " +
             "m.indexed_at_utc_ticks, m.has_content, m.is_cloud_only, " +
-            "bm25(files_fts) AS rank, snippet(files_fts, 1, '[', ']', '...', 16) AS excerpt " +
-            "FROM files_fts JOIN files_metadata AS m ON m.path_key = files_fts.path_key " +
-            "WHERE files_fts MATCH `$queryParameter " +
-            "AND (`$extensionParameter IS NULL OR m.extension = `$extensionParameter) " +
+            "bm25(files_fts) AS rank, $snippetExpression AS excerpt " +
+            "FROM files_fts JOIN files_metadata AS m ON m.id = files_fts.rowid " +
+            "WHERE $searchCondition " +
+            "AND (`$extensionParameter IS NULL OR " +
+            "m.extension = `$extensionParameter COLLATE NOCASE) " +
             "ORDER BY rank LIMIT `$limitParameter;"
         )
         [void]$command.Parameters.AddWithValue('$queryParameter', $query)
@@ -273,22 +538,56 @@ class SqliteDateiRepository : DateiRepository {
         }
 
         $this._disposed = $true
-        if ($null -ne $this._connection) {
+        if ($null -ne $this._lease) {
+            $this._lease.Dispose()
+        }
+        elseif ($null -ne $this._connection) {
             $this._connection.Dispose()
         }
     }
 
     hidden [void] InitializeSchema() {
-        $command = $this.NewCommand(@"
+        $pragmaCommand = $this.NewCommand(@"
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 PRAGMA busy_timeout = 10000;
+"@)
+        try {
+            [void]$pragmaCommand.ExecuteNonQuery()
+        }
+        finally {
+            $pragmaCommand.Dispose()
+        }
 
+        $columns = [System.Collections.Generic.HashSet[string]]::new(
+            [System.StringComparer]::OrdinalIgnoreCase
+        )
+        $columnsCommand = $this.NewCommand("PRAGMA table_info(files_metadata);")
+        try {
+            $reader = $columnsCommand.ExecuteReader()
+            try {
+                while ($reader.Read()) {
+                    [void]$columns.Add([string]$reader["name"])
+                }
+            }
+            finally {
+                $reader.Dispose()
+            }
+        }
+        finally {
+            $columnsCommand.Dispose()
+        }
+
+        if ($columns.Count -gt 0 -and -not $columns.Contains("directory_path")) {
+            throw "Database uses an unsupported legacy schema. Create a new database and scan the files again."
+        }
+
+        $collation = $this.GetPathCollation()
+        $command = $this.NewCommand(@"
 CREATE TABLE IF NOT EXISTS files_metadata (
     id INTEGER PRIMARY KEY,
-    path_key TEXT NOT NULL UNIQUE,
-    path TEXT NOT NULL,
+    directory_path TEXT NOT NULL,
     filename TEXT NOT NULL,
     extension TEXT NOT NULL,
     size_bytes INTEGER NOT NULL,
@@ -299,11 +598,19 @@ CREATE TABLE IF NOT EXISTS files_metadata (
     is_cloud_only INTEGER NOT NULL
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_files_metadata_path
+    ON files_metadata(
+        directory_path COLLATE $collation,
+        filename COLLATE $collation,
+        extension COLLATE $collation
+    );
+
 CREATE INDEX IF NOT EXISTS idx_files_metadata_extension
-    ON files_metadata(extension);
+    ON files_metadata(extension COLLATE NOCASE);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
-    path_key UNINDEXED,
+    file_id UNINDEXED,
+    filename,
     content,
     tokenize = 'unicode61 remove_diacritics 2'
 );
@@ -314,31 +621,61 @@ CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
         finally {
             $command.Dispose()
         }
+
+        if ($collation -eq "BINARY") {
+            $directoryIndexCommand = $this.NewCommand(@"
+CREATE INDEX IF NOT EXISTS idx_files_metadata_directory_nocase
+    ON files_metadata(directory_path COLLATE NOCASE);
+"@)
+            try {
+                [void]$directoryIndexCommand.ExecuteNonQuery()
+            }
+            finally {
+                $directoryIndexCommand.Dispose()
+            }
+        }
+
+        $ftsColumns = [System.Collections.Generic.HashSet[string]]::new(
+            [System.StringComparer]::OrdinalIgnoreCase
+        )
+        $ftsColumnsCommand = $this.NewCommand("PRAGMA table_info(files_fts);")
+        try {
+            $reader = $ftsColumnsCommand.ExecuteReader()
+            try {
+                while ($reader.Read()) {
+                    [void]$ftsColumns.Add([string]$reader["name"])
+                }
+            }
+            finally {
+                $reader.Dispose()
+            }
+        }
+        finally {
+            $ftsColumnsCommand.Dispose()
+        }
+
+        if (-not $ftsColumns.Contains("filename")) {
+            throw "Database uses an unsupported FTS schema. Create a new database and scan the files again."
+        }
     }
 
-    hidden [void] SaveWithinTransaction([Datei]$datei, [object]$transaction) {
-        $path = [PathUtil]::Normalize($datei.Path)
-        $pathKey = $this.GetPathKey($path)
-        $filename = $datei.Name
-        if ([string]::IsNullOrWhiteSpace($filename)) {
-            $filename = [System.IO.Path]::GetFileName($path)
-        }
-        $extension = $datei.Extension
-        if ([string]::IsNullOrWhiteSpace($extension)) {
-            $extension = [System.IO.Path]::GetExtension($filename)
-        }
-        $extension = $extension.ToLowerInvariant()
+    hidden [object] NewSaveMetadataCommand([object]$transaction) {
+        $collation = $this.GetPathCollation()
         $command = $this.NewCommand(@"
 INSERT INTO files_metadata (
-    path_key, path, filename, extension, size_bytes, creation_time_utc_ticks,
+    directory_path, filename, extension, size_bytes, creation_time_utc_ticks,
     last_write_time_utc_ticks, indexed_at_utc_ticks, has_content, is_cloud_only
 ) VALUES (
-    `$pathKeyParameter, `$pathParameter, `$filenameParameter, `$extensionParameter,
-    `$sizeParameter, `$creationTimeParameter, `$lastWriteTimeParameter,
-    `$indexedAtParameter, `$hasContentParameter, `$cloudOnlyParameter
+    `$directoryParameter, `$filenameParameter, `$extensionParameter, `$sizeParameter,
+    `$creationTimeParameter, `$lastWriteTimeParameter, `$indexedAtParameter,
+    `$hasContentParameter, `$cloudOnlyParameter
 )
-ON CONFLICT(path_key) DO UPDATE SET
-    path = excluded.path,
+ON CONFLICT(
+    directory_path COLLATE $collation,
+    filename COLLATE $collation,
+    extension COLLATE $collation
+) DO UPDATE SET
+    directory_path = excluded.directory_path,
     filename = excluded.filename,
     extension = excluded.extension,
     size_bytes = excluded.size_bytes,
@@ -346,56 +683,92 @@ ON CONFLICT(path_key) DO UPDATE SET
     last_write_time_utc_ticks = excluded.last_write_time_utc_ticks,
     indexed_at_utc_ticks = excluded.indexed_at_utc_ticks,
     has_content = excluded.has_content,
-    is_cloud_only = excluded.is_cloud_only;
+    is_cloud_only = excluded.is_cloud_only
+RETURNING id;
 "@, $transaction)
-        [void]$command.Parameters.AddWithValue('$pathKeyParameter', $pathKey)
-        [void]$command.Parameters.AddWithValue('$pathParameter', $path)
-        [void]$command.Parameters.AddWithValue('$filenameParameter', $filename)
-        [void]$command.Parameters.AddWithValue('$extensionParameter', $extension)
-        [void]$command.Parameters.AddWithValue('$sizeParameter', $datei.Size)
-        [void]$command.Parameters.AddWithValue('$creationTimeParameter', $datei.CreationTimeUtc.Ticks)
-        [void]$command.Parameters.AddWithValue('$lastWriteTimeParameter', $datei.LastWriteTimeUtc.Ticks)
-        [void]$command.Parameters.AddWithValue('$indexedAtParameter', $datei.IndexedAtUtc.Ticks)
-        [void]$command.Parameters.AddWithValue('$hasContentParameter', $datei.HasContent)
-        [void]$command.Parameters.AddWithValue('$cloudOnlyParameter', $datei.IsCloudOnly)
-
         try {
-            [void]$command.ExecuteNonQuery()
+            [void]$command.Parameters.AddWithValue('$directoryParameter', "")
+            [void]$command.Parameters.AddWithValue('$filenameParameter', "")
+            [void]$command.Parameters.AddWithValue('$extensionParameter', "")
+            [void]$command.Parameters.AddWithValue('$sizeParameter', 0)
+            [void]$command.Parameters.AddWithValue('$creationTimeParameter', 0)
+            [void]$command.Parameters.AddWithValue('$lastWriteTimeParameter', 0)
+            [void]$command.Parameters.AddWithValue('$indexedAtParameter', 0)
+            [void]$command.Parameters.AddWithValue('$hasContentParameter', $false)
+            [void]$command.Parameters.AddWithValue('$cloudOnlyParameter', $false)
+            $command.Prepare()
+            return $command
         }
-        finally {
+        catch {
             $command.Dispose()
+            throw
         }
+    }
 
-        $deleteCommand = $this.NewCommand(
-            "DELETE FROM files_fts WHERE path_key = `$pathKeyParameter;",
+    hidden [object] NewSaveFtsDeleteCommand([object]$transaction) {
+        $command = $this.NewCommand(
+            "DELETE FROM files_fts WHERE rowid = `$fileIdParameter;",
             $transaction
         )
-        [void]$deleteCommand.Parameters.AddWithValue('$pathKeyParameter', $pathKey)
         try {
-            [void]$deleteCommand.ExecuteNonQuery()
+            [void]$command.Parameters.AddWithValue('$fileIdParameter', 0)
+            $command.Prepare()
+            return $command
         }
-        finally {
-            $deleteCommand.Dispose()
+        catch {
+            $command.Dispose()
+            throw
         }
+    }
 
-        if ($datei.HasContent) {
-            $insertCommand = $this.NewCommand(
-                "INSERT INTO files_fts(path_key, content) " +
-                "VALUES (`$pathKeyParameter, `$contentParameter);",
-                $transaction
-            )
-            [void]$insertCommand.Parameters.AddWithValue('$pathKeyParameter', $pathKey)
-            [void]$insertCommand.Parameters.AddWithValue(
-                '$contentParameter',
-                $(if ($null -eq $datei.Content) { "" } else { $datei.Content })
-            )
-            try {
-                [void]$insertCommand.ExecuteNonQuery()
-            }
-            finally {
-                $insertCommand.Dispose()
-            }
+    hidden [object] NewSaveFtsInsertCommand([object]$transaction) {
+        $command = $this.NewCommand(
+            "INSERT INTO files_fts(rowid, file_id, filename, content) " +
+            "VALUES (`$fileIdParameter, `$fileIdParameter, `$filenameParameter, `$contentParameter);",
+            $transaction
+        )
+        try {
+            [void]$command.Parameters.AddWithValue('$fileIdParameter', 0)
+            [void]$command.Parameters.AddWithValue('$filenameParameter', "")
+            [void]$command.Parameters.AddWithValue('$contentParameter', "")
+            $command.Prepare()
+            return $command
         }
+        catch {
+            $command.Dispose()
+            throw
+        }
+    }
+
+    hidden [void] SaveWithinTransaction(
+        [Datei]$datei,
+        [object]$metadataCommand,
+        [object]$deleteCommand,
+        [object]$insertCommand
+    ) {
+        $parts = $this.GetPathParts($datei.Path)
+        $metadataCommand.Parameters['$directoryParameter'].Value = $parts.Directory
+        $metadataCommand.Parameters['$filenameParameter'].Value = $parts.Name
+        $metadataCommand.Parameters['$extensionParameter'].Value = $parts.Extension
+        $metadataCommand.Parameters['$sizeParameter'].Value = $datei.Size
+        $metadataCommand.Parameters['$creationTimeParameter'].Value = $datei.CreationTimeUtc.Ticks
+        $metadataCommand.Parameters['$lastWriteTimeParameter'].Value = $datei.LastWriteTimeUtc.Ticks
+        $metadataCommand.Parameters['$indexedAtParameter'].Value = $datei.IndexedAtUtc.Ticks
+        $metadataCommand.Parameters['$hasContentParameter'].Value = $datei.HasContent
+        $metadataCommand.Parameters['$cloudOnlyParameter'].Value = $datei.IsCloudOnly
+        $fileId = [long]$metadataCommand.ExecuteScalar()
+
+        $deleteCommand.Parameters['$fileIdParameter'].Value = $fileId
+        [void]$deleteCommand.ExecuteNonQuery()
+
+        $content = ""
+        if ($datei.HasContent -and $null -ne $datei.Content) {
+            $content = $datei.Content
+        }
+        $insertCommand.Parameters['$fileIdParameter'].Value = $fileId
+        $insertCommand.Parameters['$filenameParameter'].Value = $parts.Name + $parts.Extension
+        $insertCommand.Parameters['$contentParameter'].Value = $content
+        [void]$insertCommand.ExecuteNonQuery()
     }
 
     hidden [object] NewCommand([string]$sql) {
@@ -413,9 +786,14 @@ ON CONFLICT(path_key) DO UPDATE SET
 
     hidden [Datei] ReadDatei([object]$reader) {
         $datei = [Datei]::new()
-        $datei.Path = [string]$reader["path"]
-        $datei.Name = [string]$reader["filename"]
-        $datei.Extension = [string]$reader["extension"]
+        $storedExtension = [string]$reader["extension"]
+        $datei.Extension = $storedExtension.ToLowerInvariant()
+        $datei.Name = [string]$reader["filename"] + $storedExtension
+        $datei.Path = $this.GetFullPath(
+            [string]$reader["directory_path"],
+            [string]$reader["filename"],
+            $storedExtension
+        )
         $datei.Size = [long]$reader["size_bytes"]
         $datei.CreationTimeUtc = [datetime]::new(
             [long]$reader["creation_time_utc_ticks"],
@@ -434,22 +812,93 @@ ON CONFLICT(path_key) DO UPDATE SET
         return $datei
     }
 
-    hidden [string] GetPathKey([string]$path) {
+    hidden [object] GetPathParts([string]$path) {
         if ([string]::IsNullOrWhiteSpace($path)) {
             throw "File path must not be empty."
         }
 
         $normalizedPath = [PathUtil]::Normalize($path)
-        if ([PathUtil]::GetComparison() -eq [System.StringComparison]::OrdinalIgnoreCase) {
-            return $normalizedPath.ToUpperInvariant()
+        $fullName = [System.IO.Path]::GetFileName($normalizedPath)
+        if ([string]::IsNullOrWhiteSpace($fullName)) {
+            throw "File path must include a file name."
         }
-        return $normalizedPath
+
+        $extension = [System.IO.Path]::GetExtension($fullName)
+        $name = $fullName.Substring(0, $fullName.Length - $extension.Length)
+
+        return [PSCustomObject]@{
+            Directory = [System.IO.Path]::GetDirectoryName($normalizedPath)
+            Name = $name
+            Extension = $extension
+        }
+    }
+
+    hidden [string] GetFullPath(
+        [string]$directory,
+        [string]$name,
+        [string]$extension
+    ) {
+        return [PathUtil]::Normalize(
+            [System.IO.Path]::Combine($directory, "$name$extension")
+        )
+    }
+
+    hidden [string] GetPathCollation() {
+        if ([PathUtil]::GetComparison() -eq [System.StringComparison]::OrdinalIgnoreCase) {
+            return "NOCASE"
+        }
+        return "BINARY"
+    }
+
+    hidden [void] AddPathParameters([object]$command, [object]$parts) {
+        [void]$command.Parameters.AddWithValue('$directoryParameter', $parts.Directory)
+        [void]$command.Parameters.AddWithValue('$filenameParameter', $parts.Name)
+        [void]$command.Parameters.AddWithValue('$extensionParameter', $parts.Extension)
     }
 
     hidden [void] EnsureOpen() {
         if ($this._disposed) {
             throw "SqliteDateiRepository is already disposed."
         }
+        if ($null -ne $this._lease) {
+            $this._lease.ThrowIfReturned()
+        }
+    }
+}
+
+function Initialize-DatabasePool {
+    <#
+    .SYNOPSIS
+    Opens a bounded pool serially. Share only the returned C# pool with workers.
+    .DESCRIPTION
+    Borrow(timeoutMilliseconds) returns an exclusive lease. In the worker create
+    [SqliteDateiRepository]::new($lease), and release it in finally with Dispose().
+    Pool Dispose wakes waiters and defers closing outstanding connections to return.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string]$DatabasePath,
+
+        [ValidateRange(1, 1024)]
+        [int]$PoolSize = 4,
+
+        [string]$AssemblyPath = (Join-Path $PSScriptRoot '../../lib/sqlite')
+    )
+
+    & (Join-Path $PSScriptRoot 'Install-Sqlite.ps1') -Destination $AssemblyPath
+    $connections = [System.Collections.Generic.List[System.IDisposable]]::new()
+    try {
+        for ($index = 0; $index -lt $PoolSize; $index++) {
+            $repository = [SqliteDateiRepository]::new($DatabasePath, $AssemblyPath)
+            $connections.Add($repository.DetachConnection())
+        }
+        return New-Object -TypeName Suchmaschine.Persistence.DatabasePool -ArgumentList (,$connections.ToArray())
+    }
+    catch {
+        foreach ($connection in $connections) { $connection.Dispose() }
+        throw
     }
 }
 
@@ -494,9 +943,45 @@ function Sync-Files {
 
     begin {
         $pending = [System.Collections.Generic.List[Datei]]::new()
+        $filesToCheck = [System.Collections.Generic.List[Datei]]::new()
+        $checkBatchSize = 300
         $added = 0
         $updated = 0
         $unchanged = 0
+
+        $flushBatch = {
+            if ($filesToCheck.Count -eq 0) {
+                return
+            }
+
+            $storedFiles = $Database.GetMany(
+                [string[]]@($filesToCheck | ForEach-Object { $_.Path })
+            )
+
+            foreach ($fileToCheck in $filesToCheck) {
+                $stored = $null
+                $normalizedPath = [PathUtil]::Normalize($fileToCheck.Path)
+                [void]$storedFiles.TryGetValue($normalizedPath, [ref]$stored)
+                if (
+                    $null -ne $stored -and
+                    $stored.LastWriteTimeUtc.Ticks -eq $fileToCheck.LastWriteTimeUtc.Ticks -and
+                    (-not $stored.IsCloudOnly -or $fileToCheck.IsCloudOnly)
+                ) {
+                    $unchanged++
+                    continue
+                }
+
+                if ($null -eq $stored) {
+                    $added++
+                }
+                else {
+                    $updated++
+                }
+                $pending.Add($fileToCheck)
+            }
+
+            $filesToCheck.Clear()
+        }
     }
     process {
         foreach ($file in $Files) {
@@ -504,26 +989,15 @@ function Sync-Files {
                 throw "Each file must have a non-empty Path."
             }
 
-            $stored = $Database.Get($file.Path)
-            if (
-                $null -ne $stored -and
-                $stored.LastWriteTimeUtc.Ticks -eq $file.LastWriteTimeUtc.Ticks -and
-                (-not $stored.IsCloudOnly -or $file.IsCloudOnly)
-            ) {
-                $unchanged++
-                continue
+            $filesToCheck.Add($file)
+            if ($filesToCheck.Count -ge $checkBatchSize) {
+                . $flushBatch
             }
-
-            if ($null -eq $stored) {
-                $added++
-            }
-            else {
-                $updated++
-            }
-            $pending.Add($file)
         }
     }
     end {
+        . $flushBatch
+
         $Database.SaveBatch($pending.ToArray())
         return [PSCustomObject]@{
             Added = $added
@@ -545,10 +1019,13 @@ function Search-Query {
         [ValidateRange(1, 1000)]
         [int]$Limit = 100,
 
-        [string]$Extension
+        [string]$Extension,
+
+        [ValidateSet("FileName", "Content", "Both")]
+        [string]$SearchMode = "Both"
     )
 
-    return $Database.Search($Query, $Limit, $Extension)
+    return $Database.Search($Query, $Limit, $Extension, $SearchMode)
 }
 
-Export-ModuleMember -Function Initialize-Database, Add-File, Sync-Files, Search-Query
+Export-ModuleMember -Function Initialize-Database, Initialize-DatabasePool, Add-File, Sync-Files, Search-Query
