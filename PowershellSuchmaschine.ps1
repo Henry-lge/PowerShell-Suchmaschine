@@ -1,8 +1,8 @@
 Set-Location $PSScriptRoot
 
-Write-Host "=========================================" -ForegroundColor Cyan
-Write-Host "     Starte Avalonia GUI...              " -ForegroundColor Yellow
-Write-Host "=========================================" -ForegroundColor Cyan
+Write-Host "=========================================" -ForegroundColor Green
+Write-Host "    Starte PowerShell-Suchmaschine...    " -ForegroundColor Green
+Write-Host "=========================================" -ForegroundColor Green
 
 $csprojPath = "./src/GUI/FileSearcherApp.csproj"
 
