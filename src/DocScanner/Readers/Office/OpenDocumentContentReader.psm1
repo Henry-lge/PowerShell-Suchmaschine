@@ -1,7 +1,7 @@
 using module "../ContentReader.psm1"
 using module "../Shared/XmlText.psm1"
 
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # =============================================================================
@@ -22,6 +22,7 @@ using module "../Shared/XmlText.psm1"
 #
 # Gelöschter Text der Änderungsverfolgung (<text:tracked-changes>) wird
 # übersprungen.
+[NoRunspaceAffinity()]
 class OpenDocumentContentReader : ContentReader {
 
     hidden static [XmlTextRules]$TextRules = [OpenDocumentContentReader]::CreateRules()

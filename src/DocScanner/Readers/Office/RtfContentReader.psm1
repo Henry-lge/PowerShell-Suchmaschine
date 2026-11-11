@@ -1,6 +1,6 @@
 using module "../ContentReader.psm1"
 
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # =============================================================================
@@ -20,6 +20,7 @@ using module "../ContentReader.psm1"
 #     1) sind ein Ersatz für alte Programme und werden übersprungen
 #   - Gruppen wie {\fonttbl ...} oder {\*\irgendwas ...} enthalten keinen
 #     sichtbaren Text ("Destinations") und werden komplett übersprungen
+[NoRunspaceAffinity()]
 class RtfContentReader : ContentReader {
 
     # Destinations ohne sichtbaren Text.

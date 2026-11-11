@@ -1,6 +1,6 @@
 using module "../ContentReader.psm1"
 
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # =============================================================================
@@ -47,6 +47,7 @@ using module "../ContentReader.psm1"
 # Ohne größeren Aufwand nicht lesbar: verschlüsselte PDFs ("/Encrypt" im
 # Trailer), Objekt-Streams ("/Type /ObjStm", Objekte komprimiert in einem
 # Stream) und gescannte PDFs ohne Textebene (dort hilft nur OCR).
+[NoRunspaceAffinity()]
 class PdfContentReader : ContentReader {
 
     PdfContentReader() {

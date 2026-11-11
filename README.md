@@ -10,7 +10,7 @@ Eine ausführliche Erklärung der Klassen, Reader und Abläufe steht in der
 
 ## Voraussetzungen
 
-- PowerShell 7.2 oder neuer
+- PowerShell 7.4 oder neuer
 - .Net 10.0  Download: https://dotnet.microsoft.com/en-us/download/dotnet/10.0
 - Für SQLite: Internetzugriff beim erstmaligen Einrichten der SQLite-Laufzeit
   (NuGet-Pakete werden heruntergeladen)
@@ -135,7 +135,7 @@ versucht werden.
 
 ## Entwicklung und Tests
 
-Die Tests benötigen Pester und PowerShell 7.2 oder neuer:
+Die Tests benötigen Pester und PowerShell 7.4 oder neuer:
 
 ```powershell
 Invoke-Pester ./tests/SqliteDateiRepository.Tests.ps1

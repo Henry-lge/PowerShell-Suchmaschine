@@ -1,7 +1,7 @@
 using module "../ContentReader.psm1"
 using module "../Shared/OpenXml.psm1"
 
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # =============================================================================
@@ -26,6 +26,7 @@ using module "../Shared/OpenXml.psm1"
 #       t="b"          Wahrheitswert 0/1
 #       t="str", "e"   Text-Ergebnis einer Formel, Fehler
 #       kein t / "n"   Zahl (auch Datumswerte sind Zahlen, z. B. 45000)
+[NoRunspaceAffinity()]
 class ExcelContentReader : ContentReader {
 
     ExcelContentReader() {
@@ -140,27 +141,45 @@ class ExcelContentReader : ContentReader {
             $inText = $false
             $phoneticDepth = 0
 
+            # Diese Schleife läuft für jeden XML-Knoten. Deshalb if/elseif
+            # mit vorab geholten Knotentypen statt switch: Das ist in
+            # PowerShell deutlich schneller.
+            $elementType = [System.Xml.XmlNodeType]::Element
+            $endElementType = [System.Xml.XmlNodeType]::EndElement
+
             while ($reader.Read()) {
-                switch ($reader.NodeType) {
-                    ([System.Xml.XmlNodeType]::Element) {
-                        switch ($reader.LocalName) {
-                            "si" { [void]$builder.Clear() }
-                            "rPh" { if (-not $reader.IsEmptyElement) { $phoneticDepth++ } }
-                            "t" { $inText = -not $reader.IsEmptyElement }
-                        }
+                $nodeType = $reader.NodeType
+
+                if ($nodeType -eq $elementType) {
+                    $name = $reader.LocalName
+
+                    if ($name -ceq "si") {
+                        [void]$builder.Clear()
                     }
-                    ([System.Xml.XmlNodeType]::EndElement) {
-                        switch ($reader.LocalName) {
-                            "si" { $strings.Add($builder.ToString()) }
-                            "rPh" { $phoneticDepth-- }
-                            "t" { $inText = $false }
-                        }
+                    elseif ($name -ceq "t") {
+                        $inText = -not $reader.IsEmptyElement
                     }
-                    { $_ -in [System.Xml.XmlNodeType]::Text, [System.Xml.XmlNodeType]::SignificantWhitespace, [System.Xml.XmlNodeType]::Whitespace } {
-                        if ($inText -and $phoneticDepth -eq 0) {
-                            [void]$builder.Append($reader.Value)
-                        }
+                    elseif ($name -ceq "rPh" -and -not $reader.IsEmptyElement) {
+                        $phoneticDepth++
                     }
+                }
+                elseif ($nodeType -eq $endElementType) {
+                    $name = $reader.LocalName
+
+                    if ($name -ceq "t") {
+                        $inText = $false
+                    }
+                    elseif ($name -ceq "si") {
+                        $strings.Add($builder.ToString())
+                    }
+                    elseif ($name -ceq "rPh") {
+                        $phoneticDepth--
+                    }
+                }
+                elseif ($inText -and $phoneticDepth -eq 0) {
+                    # Text, SignificantWhitespace oder Whitespace; andere
+                    # Knoten kommen innerhalb von <t> nicht vor.
+                    [void]$builder.Append($reader.Value)
                 }
             }
         }
@@ -192,44 +211,51 @@ class ExcelContentReader : ContentReader {
             $cellType = ""
             $inValue = $false
 
-            while ($reader.Read()) {
-                switch ($reader.NodeType) {
-                    ([System.Xml.XmlNodeType]::Element) {
-                        switch ($reader.LocalName) {
-                            "row" { $cells.Clear() }
-                            "c" {
-                                $cellType = "$($reader.GetAttribute('t'))"
-                                [void]$value.Clear()
-                            }
-                            # <v> enthält den Wert, <t> den Text von
-                            # Inline-Texten. Formeln (<f>) werden nicht gelesen.
-                            "v" { $inValue = -not $reader.IsEmptyElement }
-                            "t" { $inValue = -not $reader.IsEmptyElement }
-                        }
-                    }
-                    ([System.Xml.XmlNodeType]::EndElement) {
-                        switch ($reader.LocalName) {
-                            "v" { $inValue = $false }
-                            "t" { $inValue = $false }
-                            "c" {
-                                $cellText = [ExcelContentReader]::FormatCell($cellType, $value.ToString(), $sharedStrings)
+            # Wie in _ReadSharedStrings: if/elseif statt switch, weil diese
+            # Schleife für jeden Knoten jeder Zelle läuft.
+            $elementType = [System.Xml.XmlNodeType]::Element
+            $endElementType = [System.Xml.XmlNodeType]::EndElement
 
-                                if (-not [string]::IsNullOrWhiteSpace($cellText)) {
-                                    $cells.Add($cellText.Trim())
-                                }
-                            }
-                            "row" {
-                                if ($cells.Count -gt 0) {
-                                    $lines.Add($cells -join "`t")
-                                }
+            while ($reader.Read()) {
+                $nodeType = $reader.NodeType
+
+                if ($nodeType -eq $elementType) {
+                    $name = $reader.LocalName
+
+                    # <v> enthält den Wert, <t> den Text von Inline-Texten.
+                    # Formeln (<f>) werden nicht gelesen.
+                    if ($name -ceq "v" -or $name -ceq "t") {
+                        $inValue = -not $reader.IsEmptyElement
+                    }
+                    elseif ($name -ceq "c") {
+                        $cellType = $reader.GetAttribute("t")
+                        [void]$value.Clear()
+                    }
+                    elseif ($name -ceq "row") {
+                        $cells.Clear()
+                    }
+                }
+                elseif ($nodeType -eq $endElementType) {
+                    $name = $reader.LocalName
+
+                    if ($name -ceq "v" -or $name -ceq "t") {
+                        $inValue = $false
+                    }
+                    elseif ($name -ceq "c") {
+                        if ($value.Length -gt 0) {
+                            $cellText = [ExcelContentReader]::FormatCell($cellType, $value.ToString(), $sharedStrings)
+
+                            if (-not [string]::IsNullOrWhiteSpace($cellText)) {
+                                $cells.Add($cellText.Trim())
                             }
                         }
                     }
-                    { $_ -in [System.Xml.XmlNodeType]::Text, [System.Xml.XmlNodeType]::SignificantWhitespace, [System.Xml.XmlNodeType]::Whitespace } {
-                        if ($inValue) {
-                            [void]$value.Append($reader.Value)
-                        }
+                    elseif ($name -ceq "row" -and $cells.Count -gt 0) {
+                        $lines.Add([string]::Join("`t", $cells))
                     }
+                }
+                elseif ($inValue) {
+                    [void]$value.Append($reader.Value)
                 }
             }
         }

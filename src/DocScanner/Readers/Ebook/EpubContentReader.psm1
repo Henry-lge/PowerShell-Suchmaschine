@@ -1,6 +1,6 @@
 using module "../ContentReader.psm1"
 
-#requires -Version 7.2
+#requires -Version 7.4
 
 
 # =============================================================================
@@ -19,6 +19,7 @@ using module "../ContentReader.psm1"
 #
 # Fehlt die Paketdatei oder ist sie defekt, werden stattdessen alle
 # HTML-Dateien des Archivs in Namensreihenfolge gelesen.
+[NoRunspaceAffinity()]
 class EpubContentReader : ContentReader {
 
     EpubContentReader() {

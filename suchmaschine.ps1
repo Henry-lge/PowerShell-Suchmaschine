@@ -1,7 +1,10 @@
-# Crawler-Modul laden (es lädt den DocScanner, das Modell und das Repository).
+# Crawler-Modul und SQLite-Repository laden.
 using module "./src/Crawler/Crawler.psm1"
 using module "./src/Persistence/SqliteDateiRepository.psm1"
 
+# CmdletBinding sorgt dafür, dass unbekannte oder falsch geschriebene
+# Parameter einen Fehler auslösen, statt still ignoriert zu werden.
+[CmdletBinding()]
 param(
     # Startordner für den Scan. Standardmäßig der Benutzerordner.
     [string]$RootPath = $HOME,
@@ -10,7 +13,7 @@ param(
     [string[]]$ExcludePath = @(),
 
     # Optionaler FTS5-Suchausdruck; ohne Wert wird nur gescannt.
-    [string]$Query = "ist",
+    [string]$Query = "",
 
     # Persistenter SQLite-Index.
     [string]$DatabasePath = (Join-Path $PSScriptRoot "data/index.sqlite3"),
@@ -20,19 +23,20 @@ param(
     [int]$SearchLimit = 100
 )
 
-$database = Initialize-Database -DatabasePath $DatabasePath
+# Der Crawler öffnet die Datenbank unter DatabasePath selbst. Nur so kann er
+# einen eigenen Schreib-Thread starten, der speichert, während weiter gelesen
+# wird. Ein über $crawler.Repository übergebenes Repository wird dagegen im
+# Hauptthread beschrieben.
+$crawler = [Crawler]::new()
+$crawler.DatabasePath = $DatabasePath
+$crawler.ExcludedPaths = $ExcludePath
+
+# Optional: Fortschritt bei großen Scans ausgeben.
+$crawler.ProgressOutput = $true
+$crawler.ProgressInterval = 1000
+$crawler.VerboseOutput = $false
 
 try {
-    # Crawler mit Standardeinstellungen erstellen.
-    $crawler = [Crawler]::new()
-    $crawler.Repository = $database
-    $crawler.ExcludedPaths = $ExcludePath
-
-    # Optional: Fortschritt bei großen Scans ausgeben.
-    $crawler.ProgressOutput = $true
-    $crawler.ProgressInterval = 1000
-    $crawler.VerboseOutput = $false
-
     # Dauer des Scans messen.
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $crawler.ScanFolder($RootPath)
@@ -54,15 +58,19 @@ try {
     Write-Host "Supported content types: $($crawler.DocScanner.GetSupportedExtensions() -join ', ')"
     Write-Host "Scan duration: $($stopwatch.Elapsed.TotalSeconds.ToString('F3')) seconds"
 
+    # Gesucht wird über die Datenbank des Crawlers, solange sie noch offen
+    # ist; Dispose() im finally-Block schließt sie.
     if (-not [string]::IsNullOrWhiteSpace($Query)) {
-        $results = @(Search-Query -Database $database -Query $Query -Limit $SearchLimit)
+        $results = @(Search-Query -Database $crawler.Repository -Query $Query -Limit $SearchLimit)
+
         if ($results.Count -eq 0) {
-            Write-Warning (
+            # Klammern nötig: -f bindet stärker als +, sonst würde nur der
+            # letzte Teil formatiert.
+            Write-Warning ((
                 "Keine Treffer fuer '{0}'. Die Volltextsuche findet indexierte " +
                 "Woerter/Phrasen, keine beliebigen Teilzeichenketten. Pruefe " +
-                "Suchbegriff, Scan-Ordner und ob passende Reader Inhalte lesen konnten." -f
-                $Query
-            )
+                "Suchbegriff, Scan-Ordner und ob passende Reader Inhalte lesen konnten."
+            ) -f $Query)
         }
         else {
             $results | ForEach-Object {
@@ -76,5 +84,6 @@ try {
     }
 }
 finally {
-    $database.Dispose()
+    # Schließt Worker, Schreib-Thread und die Datenbank.
+    $crawler.Dispose()
 }
