@@ -320,46 +320,48 @@ pwsh -File ./tests/Measure-Performance.ps1 `
     -CsvPath "$HOME/performance-results.csv"
 ```
 
-Jeder Messlauf enthält zwei Scans desselben Bestands:
+Jede Iteration erstellt eine frische temporäre Datenbank und misst denselben
+Ablauf in zwei Zuständen:
 
-1. **Indexierung:** Die temporäre Datenbank ist zu Beginn leer; der Crawler
-   verarbeitet alle Dateien und schreibt neue Einträge.
-2. **Unveränderter Rescan:** Direkt danach wird derselbe Bestand erneut
-   gescannt. Die Dateien sollten als unverändert erkannt werden und weder
-   Inhaltsextraktion noch Schreiben auslösen.
+1. **Leere Datenbank:** Initialisierung und Datenbankoperationen auf leerem
+   Index, danach der erste Scan, der alle Dateien verarbeitet und einträgt.
+2. **Gefüllte Datenbank:** Datenbank erneut öffnen/initialisieren, dann der
+   direkte zweite Scan desselben Bestands sowie Datenbankoperationen auf dem
+   vorhandenen Index. Unveränderte Dateien sollten nicht erneut gelesen oder
+   gespeichert werden.
 
-Die Datenbank wird zwischen den Messläufen mit `RemoveBatch()` geleert. Drei
-Warm-up-Läufe sind standardmäßig von den Statistiken ausgeschlossen. Der
-Standardwert `Iterations = 100` bedeutet 100 gemessene Indexierungen und 100
-gemessene unveränderte Scans. Zusätzlich misst jeder Lauf separat `GetMany()`,
-Volltextsuche und `RemoveBatch()` auf dem gerade indizierten Bestand. Die
-Laufzeit dieser separaten Datenbankmessungen zählt nicht zur Crawler-Laufzeit.
+In beiden Zuständen werden `GetPathsUnder()`, `Search-Query`, `GetMany()` und
+`RemoveBatch()` separat gemessen. Beim leeren Index sind Suchtreffer und
+bearbeitete Pfade erwartungsgemäß null; diese Werte dienen als Vergleich für
+den gefüllten Index. Der Scan wird außerdem in Gesamtlaufzeit, Repository-
+`Get`, `SaveBatch`, `Remove`, `GetPathsUnder`, `DocScanner.ReadContent()` und
+übrige Crawler-Arbeit zerlegt. Auch Komponenten ohne Aufruf im gefüllten
+Zustand werden mit null Aufrufen protokolliert.
 
-Die Konsolenausgabe zeigt je Szenario Mittelwert, Median, P95,
-Standardabweichung, Minimum und Maximum. Für Crawler-Phasen wird zusätzlich
-der prozentuale Anteil an der durchschnittlichen Gesamtlaufzeit angezeigt.
-Die CSV enthält eine Zeile pro Messpunkt und Iteration und eignet sich für
-weitere statistische Auswertung; Laufzeiten verwenden unabhängig von der
-System-Locale einen Dezimalpunkt.
-Unter anderem werden diese Phasen getrennt ausgegeben:
+`Iterations` ist die Anzahl der Messpaare. Jedes Szenario und jede Komponente
+wird somit `Iterations`-mal gemessen; `WarmupRuns` wiederholt denselben Ablauf,
+geht aber nicht in die Ergebnisse ein. Die Datenbank- und Suchmessungen zählen
+nicht zur Crawler-Laufzeit. Die Suchzeit umfasst den Aufruf bis zu den
+Ergebnissen, nicht deren Konsolenausgabe. Am Ende jeder Iteration wird die
+temporäre Datenbank geleert beziehungsweise entfernt.
 
-- Gesamtlaufzeit des Crawlers
-- Repository-Lookups (`Get`) und `GetPathsUnder()` innerhalb des Scans
-- Schreiben über `SaveBatch()` sowie die im Scan ausgelösten Einzellöschungen
-- Zeit in `DocScanner.ReadContent()`
-- übrige Crawler-Zeit, darunter Dateisystem-Auflistung, Metadatenbildung und
-  Steuerlogik
-- separate Messungen für DB-`GetMany()`, Volltextsuche und `RemoveBatch()`
+Die Konsole zeigt je Komponente und Datenbankzustand die Anzahl der Läufe,
+Median, P95 sowie durchschnittliche Aufruf- und Elementzahlen je Lauf. Die CSV
+enthält eine Zeile pro Messpunkt und Iteration und eignet sich für die
+Detailanalyse; Laufzeiten verwenden unabhängig von der System-Locale einen
+Dezimalpunkt. Die CSV enthält alle oben genannten Scan-Phasen und
+SQLite-Operationen.
 
 Die CSV wird standardmäßig im temporären Verzeichnis angelegt; `-CsvPath` legt
 den gewünschten dauerhaften Speicherort fest. Das Skript verwendet eine
 isolierte temporäre SQLite-Datenbank und entfernt sie nach Abschluss. Der
 Scan-Root wird nur gelesen. Die Messwerte hängen dennoch von Dateisystem- und
-SQLite-Caches, Datenträger, Dateitypen und externen Reader-Tools ab. Ein
-„kalter“ Index bedeutet hier eine leere Datenbank; der Betriebssystem-Cache
-wird nicht geleert. `-SearchQuery` sollte für eine repräsentative Suchmessung
-einen im Bestand häufig vorkommenden Suchbegriff enthalten. Für Vergleiche
-deshalb denselben Bestand, dieselbe
+SQLite-Caches, Datenträger, Dateitypen und externen Reader-Tools ab. Die
+Datenbank wird für jede Iteration frisch erstellt; PowerShell-Prozessstart und
+Modulladen sind nicht enthalten, und der Betriebssystem-Cache wird nicht
+geleert. `-SearchQuery` sollte für eine repräsentative Suchmessung einen im
+Bestand häufig vorkommenden Suchbegriff enthalten. Für Vergleiche deshalb
+denselben Bestand, dieselbe
 PowerShell-/SQLite-Version und dieselben Parameter verwenden.
 
 ## Volltextsuche
@@ -726,13 +728,18 @@ sequenceDiagram
 ```
 
 Der Fehler `ParentContainsErrorRecordException: Cannot find an overload for
-"CreateCollation" and the argument count: "2"` entstand beim Initialisieren
-der Repository-Verbindung, nicht bei einer SQL-Abfrage. `RegisterPathCollation()`
-übergab einen `System.Func[string, string, int]`, Microsoft.Data.Sqlite erwartet
-aber `System.Comparison[string]`. PowerShell konnte deshalb die passende
-`CreateCollation`-Overload nicht binden. Der Aufruf erfolgt nach dem Öffnen der
-Verbindung und vor der Schema-Initialisierung. Der Delegate-Typ ist inzwischen
-korrigiert.
+"CreateCollation" and the argument count: "2"` kam von einer früheren
+Implementierung, die beim Öffnen der Verbindung eine benutzerdefinierte
+Collation mit einem für `Microsoft.Data.Sqlite` inkompatiblen Delegate-Typ
+registrierte. Die aktuelle Implementierung ruft `CreateCollation` nicht mehr
+auf und verwendet unter Windows/macOS SQLite-`NOCASE`, unter Linux `BINARY`.
+SQLite-`NOCASE` faltet nur ASCII-Buchstaben; nicht-ASCII-Pfadzeichen werden
+daher nicht vollständig wie bei .NET `OrdinalIgnoreCase` verglichen.
+
+Wenn der Fehler trotz aktuellem Quellstand weiter erscheint, läuft
+wahrscheinlich noch eine PowerShell-Sitzung mit dem zuvor importierten
+Modulcode. Die Sitzung vollständig beenden und neu starten, damit die
+aktuelle Repository-Klasse geladen wird.
 
 ## Zeitstempel, Status und Neustart
 

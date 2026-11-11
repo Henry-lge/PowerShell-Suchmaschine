@@ -145,8 +145,10 @@ Die SQLite-Tests decken Schema-Erstellung, Metadaten, Volltextsuche,
 Aktualisierungen, Transaktionen, Synchronisierung, Persistenz und Fehler nach
 dem Schließen des Repositories ab.
 
-Für einen Performance-Benchmark mit 100 Durchläufen, getrennten Messwerten
-für Indexierung, unveränderte Scans und Datenbankoperationen sowie CSV-Rohdaten:
+Der Performance-Benchmark misst in jeder Iteration den Scan und die
+Datenbankfunktionen einmal mit leerem und einmal mit gefülltem Index. Die
+Ergebnisübersicht zeigt Median und P95 je Komponente; alle Messwerte stehen
+zusätzlich in den CSV-Rohdaten:
 
 ```powershell
 pwsh -File ./tests/Measure-Performance.ps1 `

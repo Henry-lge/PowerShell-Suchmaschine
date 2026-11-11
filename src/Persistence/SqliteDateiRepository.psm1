@@ -309,7 +309,7 @@ WITH requested(directory_path, filename, extension) AS (
                     $ftsSql = @"
 $requestedCte
 DELETE FROM files_fts
-WHERE file_id IN (
+WHERE rowid IN (
     SELECT metadata.id
     FROM files_metadata AS metadata
     JOIN requested
@@ -441,7 +441,7 @@ WHERE id IN (
             "m.creation_time_utc_ticks, m.last_write_time_utc_ticks, " +
             "m.indexed_at_utc_ticks, m.has_content, m.is_cloud_only, " +
             "bm25(files_fts) AS rank, snippet(files_fts, 1, '[', ']', '...', 16) AS excerpt " +
-            "FROM files_fts JOIN files_metadata AS m ON m.id = files_fts.file_id " +
+            "FROM files_fts JOIN files_metadata AS m ON m.id = files_fts.rowid " +
             "WHERE files_fts MATCH `$queryParameter " +
             "AND (`$extensionParameter IS NULL OR " +
             "m.extension = `$extensionParameter COLLATE NOCASE) " +
@@ -576,6 +576,52 @@ CREATE INDEX IF NOT EXISTS idx_files_metadata_directory_nocase
                 $directoryIndexCommand.Dispose()
             }
         }
+
+        $this.MigrateFtsRowIds()
+    }
+
+    hidden [void] MigrateFtsRowIds() {
+        $transaction = $this._connection.BeginTransaction()
+        try {
+            $versionCommand = $this.NewCommand("PRAGMA user_version;", $transaction)
+            $version = 0
+            try {
+                $version = [int]$versionCommand.ExecuteScalar()
+            }
+            finally {
+                $versionCommand.Dispose()
+            }
+
+            if ($version -lt 1) {
+                $command = $this.NewCommand(@"
+CREATE VIRTUAL TABLE files_fts_rowid USING fts5(
+    file_id UNINDEXED,
+    content,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+INSERT INTO files_fts_rowid(rowid, file_id, content)
+SELECT file_id, file_id, content FROM files_fts;
+DROP TABLE files_fts;
+ALTER TABLE files_fts_rowid RENAME TO files_fts;
+PRAGMA user_version = 1;
+"@, $transaction)
+                try {
+                    [void]$command.ExecuteNonQuery()
+                }
+                finally {
+                    $command.Dispose()
+                }
+            }
+
+            $transaction.Commit()
+        }
+        catch {
+            $transaction.Rollback()
+            throw
+        }
+        finally {
+            $transaction.Dispose()
+        }
     }
 
     hidden [void] MigrateLegacySchema() {
@@ -704,8 +750,8 @@ INSERT INTO files_metadata_v2 (
             }
 
             $copyFtsCommand = $this.NewCommand(@"
-INSERT INTO files_fts_v2(file_id, content)
-SELECT metadata.id, full_text.content
+INSERT INTO files_fts_v2(rowid, file_id, content)
+SELECT metadata.id, metadata.id, full_text.content
 FROM files_fts AS full_text
 JOIN files_metadata AS metadata ON metadata.path_key = full_text.path_key;
 "@, $transaction)
@@ -728,6 +774,7 @@ CREATE UNIQUE INDEX idx_files_metadata_path
         extension COLLATE $collation
     );
 CREATE INDEX idx_files_metadata_extension ON files_metadata(extension COLLATE NOCASE);
+PRAGMA user_version = 1;
 "@, $transaction)
             if ($collation -eq "BINARY") {
                 $replaceCommand.CommandText += @"
@@ -802,7 +849,7 @@ RETURNING id;
 
     hidden [object] NewSaveFtsDeleteCommand([object]$transaction) {
         $command = $this.NewCommand(
-            "DELETE FROM files_fts WHERE file_id = `$fileIdParameter;",
+            "DELETE FROM files_fts WHERE rowid = `$fileIdParameter;",
             $transaction
         )
         try {
@@ -818,8 +865,8 @@ RETURNING id;
 
     hidden [object] NewSaveFtsInsertCommand([object]$transaction) {
         $command = $this.NewCommand(
-            "INSERT INTO files_fts(file_id, content) " +
-            "VALUES (`$fileIdParameter, `$contentParameter);",
+            "INSERT INTO files_fts(rowid, file_id, content) " +
+            "VALUES (`$fileIdParameter, `$fileIdParameter, `$contentParameter);",
             $transaction
         )
         try {
