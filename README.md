@@ -55,6 +55,20 @@ oder Phrasen in Dateinamen, extrahiertem Inhalt oder beidem, keine beliebigen
 Teilzeichenketten. Weitere Beispiele und Details stehen in
 [DATABASE.md](./DATABASE.md).
 
+### Grafische Oberfläche
+
+Nach dem Erstellen des Index kann die GUI im Projektverzeichnis gestartet werden:
+
+```bash
+dotnet run --project src/GUI/FileSearcherApp.csproj
+```
+
+Die GUI behandelt die Eingabe als normalen Suchtext. Bei Dateinamen findet sie
+auch Teilzeichenfolgen wie `.txt` oder `.`. Inhalte werden weiterhin als
+FTS5-Wortphrase durchsucht, nicht als beliebige Zeichenfolge. Die Suche über
+`suchmaschine.ps1` verwendet dagegen weiterhin FTS5-Syntax. Details stehen in
+[DATABASE.md](./DATABASE.md#volltextsuche).
+
 ## Ablauf eines Scans
 
 1. Der `Crawler` durchläuft Ordner iterativ und erfasst Metadaten wie Pfad,
