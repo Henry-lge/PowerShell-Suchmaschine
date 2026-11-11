@@ -5,3 +5,9 @@
 /data/*.sqlite3-wal
 /src/GUI/bin
 /src/GUI/obj
+/lib/*
+/data/*
+
+.tmp
+.vscode/*
+.DS_Store
