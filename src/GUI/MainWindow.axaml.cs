@@ -1,5 +1,6 @@
 using System;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 
 namespace FileSearcherApp
@@ -12,6 +13,17 @@ namespace FileSearcherApp
         public MainWindow()
         {
             InitializeComponent();
+
+            SearchBox.KeyDown += OnSearchKeyDown;
+        }
+
+        private void OnSearchKeyDown(object? sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter)
+            {
+                e.Handled = true;
+                OnSearchClicked(sender, e);
+            }
         }
 
         private async void OnSearchClicked(
