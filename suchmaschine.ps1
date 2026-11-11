@@ -10,14 +10,18 @@ param(
     [string[]]$ExcludePath = @(),
 
     # Optionaler FTS5-Suchausdruck; ohne Wert wird nur gescannt.
-    [string]$Query = "ist",
+    [string]$Query = "5_kap_butler",
 
     # Persistenter SQLite-Index.
     [string]$DatabasePath = (Join-Path $PSScriptRoot "data/index.sqlite3"),
 
     # Maximale Anzahl an Suchtreffern.
     [ValidateRange(1, 1000)]
-    [int]$SearchLimit = 100
+    [int]$SearchLimit = 100,
+
+    # Suchbereich: Dateiname, extrahierter Dateiinhalt oder beides.
+    [ValidateSet("FileName", "Content", "Both")]
+    [string]$SearchMode = "Both"
 )
 
 $database = Initialize-Database -DatabasePath $DatabasePath
@@ -55,7 +59,10 @@ try {
     Write-Host "Scan duration: $($stopwatch.Elapsed.TotalSeconds.ToString('F3')) seconds"
 
     if (-not [string]::IsNullOrWhiteSpace($Query)) {
-        $results = @(Search-Query -Database $database -Query $Query -Limit $SearchLimit)
+        $results = @(
+            Search-Query -Database $database -Query $Query `
+                -Limit $SearchLimit -SearchMode $SearchMode
+        )
         if ($results.Count -eq 0) {
             Write-Warning (
                 "Keine Treffer fuer '{0}'. Die Volltextsuche findet indexierte " +
