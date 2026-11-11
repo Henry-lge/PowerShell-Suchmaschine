@@ -34,7 +34,7 @@ try {
         $database = Initialize-Database -DatabasePath $DatabasePath 6>$null 3>$null
 
         # Die gesamte Suchlogik liegt hinter der DB-Schnittstelle.
-        $results = @(Search-Query -Database $database -Query $Query -Limit $Limit -Extension $Extension |
+        $results = @(Search-Query -Database $database -Query $Query -Limit $Limit -Extension $Extension -Literal |
             ForEach-Object {
                 [ordered]@{
                     path = $_.File.Path

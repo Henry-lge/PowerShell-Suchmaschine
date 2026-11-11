@@ -532,11 +532,21 @@ Search-Query -Database $database -Query "skript" -Extension ".pdf"
 Search-Query -Database $database -Query "skript" -SearchMode FileName
 Search-Query -Database $database -Query "skript" -SearchMode Content
 Search-Query -Database $database -Query "skript" -SearchMode Both
+Search-Query -Database $database -Query ".txt" -Literal
 ```
 
 Parameter:
 
-- `Query`: FTS5-Suchausdruck. Ein leerer Ausdruck liefert keine Treffer.
+- `Query`: Standardmäßig ein FTS5-Suchausdruck. Ein leerer Ausdruck liefert keine Treffer.
+- `Literal`: Behandelt die Eingabe als normalen Suchtext. Dateinamen werden
+  nach der wörtlichen Teilzeichenfolge durchsucht; Inhalte weiterhin nach einer
+  FTS5-Phrase aus Wörtern, nicht nach beliebigen Zeichenfolgen. Beispielsweise
+  findet `.txt` Dateinamen mit dieser Endung und `.` Dateinamen mit einem Punkt.
+  Die GUI verwendet diesen Modus; ein erneutes Indexieren ist nicht nötig.
+  Inhaltstreffer werden nach BM25 sortiert und vor reinen Dateinamentreffern
+  ausgegeben; letztere haben den Score 0 und den Dateinamen als Ausschnitt.
+  Die Dateinamensuche verwendet SQLite `LIKE` und ist für ASCII unabhängig von
+  Groß-/Kleinschreibung; bei anderen Zeichen gilt die SQLite-Standardregel.
 - `Limit`: Höchstens 1 bis 1000 Ergebnisse; Standard ist 100.
 - `Extension`: Optionaler Dateiendungsfilter. Ein fehlender Punkt wird
   ergänzt und die Eingabe kleingeschrieben.
