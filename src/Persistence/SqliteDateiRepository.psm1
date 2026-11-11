@@ -443,8 +443,16 @@ WHERE id IN (
     [object[]] Search(
         [string]$query,
         [int]$limit = 100,
-        [string]$extension = $null,
-        [string]$searchMode = "Both"
+        [string]$extension = $null
+    ) {
+        return $this.Search($query, $limit, $extension, "Both")
+    }
+
+    [object[]] Search(
+        [string]$query,
+        [int]$limit,
+        [string]$extension,
+        [string]$searchMode
     ) {
         $this.EnsureOpen()
         if ($searchMode -notin @("FileName", "Content", "Both")) {
