@@ -85,10 +85,11 @@
                     Foreground="#8AABAA"
                     Padding="0"
                     ToolTip.Tip="Einstellungen">
-                <TextBlock Text="⚙"
-                           FontSize="20"
-                           HorizontalAlignment="Center"
-                           VerticalAlignment="Center"/>
+             <Image Source="avares://FileSearcherApp/GUIAssets/settingsIcon.png"
+                  Width="20"
+                   Height="20"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center"/>
                 <Button.Flyout>
                     <MenuFlyout>
                         <MenuItem Header="Gestalten"/>
