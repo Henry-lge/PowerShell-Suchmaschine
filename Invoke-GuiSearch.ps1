@@ -6,7 +6,7 @@ param(
     [ValidateRange(1, 1000)]
     [int]$Limit = 100,
     [string]$Extension,
-    [string]$SearchMode = 'FileName'
+    [string]$SearchMode = 'Both'
 )
 
 $ErrorActionPreference = 'Stop'
