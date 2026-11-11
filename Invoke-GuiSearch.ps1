@@ -5,7 +5,8 @@ param(
     [string]$DatabasePath = (Join-Path $PSScriptRoot 'data/index.sqlite3'),
     [ValidateRange(1, 1000)]
     [int]$Limit = 100,
-    [string]$Extension
+    [string]$Extension,
+    [string]$SearchMode = 'FileName'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -20,6 +21,7 @@ try {
         $Query = [string]$request.query
         if ($null -ne $request.limit) { $Limit = [int]$request.limit }
         if ($null -ne $request.extension) { $Extension = [string]$request.extension }
+        if ($null -ne $request.searchMode) { $SearchMode = [string]$request.searchMode }
     }
     if ($Limit -lt 1 -or $Limit -gt 1000) {
         throw 'Limit muss zwischen 1 und 1000 liegen.'
@@ -34,7 +36,7 @@ try {
         $database = Initialize-Database -DatabasePath $DatabasePath 6>$null 3>$null
 
         # Die gesamte Suchlogik liegt hinter der DB-Schnittstelle.
-        $results = @(Search-Query -Database $database -Query $Query -Limit $Limit -Extension $Extension |
+        $results = @(Search-Query -Database $database -Query $Query -Limit $Limit -Extension $Extension -SearchMode $SearchMode |
             ForEach-Object {
                 [ordered]@{
                     path = $_.File.Path

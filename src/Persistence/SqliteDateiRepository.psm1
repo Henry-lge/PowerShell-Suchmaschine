@@ -1051,7 +1051,7 @@ function Search-Query {
         [string]$Extension,
 
         [ValidateSet("FileName", "Content", "Both")]
-        [string]$SearchMode = "Both"
+        [string]$SearchMode
     )
 
     return $Database.Search($Query, $Limit, $Extension, $SearchMode)
