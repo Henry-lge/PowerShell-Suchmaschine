@@ -33,13 +33,16 @@ als Parameter übergeben:
 pwsh -File ./suchmaschine.ps1 `
     -RootPath "$HOME/Documents" `
     -ExcludePath @("$HOME/Documents/Private", "$HOME/Documents/Backup") `
-    -Query "lineare algebra"
+    -Query "lineare algebra" `
+    -SearchMode Both
 ```
 
 Der Index wird standardmäßig dauerhaft in `data/index.sqlite3` gespeichert.
 Mit `-DatabasePath` lässt sich ein anderer Speicherort angeben. `-Query`
 startet nach dem Scan eine Volltextsuche; ohne diesen Parameter wird nur
-gescannt.
+gescannt. `-SearchMode` steuert den Suchbereich: `FileName`, `Content` oder
+`Both` (Standard). So lässt sich zum Beispiel mit `-SearchMode FileName`
+ausschließlich nach Dateinamen suchen.
 
 Das Startskript zeigt nach dem Scan eine Zusammenfassung, Fehler nach
 Verarbeitungsphase, die verfügbaren Dateiendungen und die Laufzeit an.
@@ -47,8 +50,9 @@ Ausgeschlossene Ordnernamen sind standardmäßig unter anderem `.git`,
 `node_modules`, `.venv` und `__pycache__`.
 
 Die Suchabfrage verwendet SQLite FTS5-Syntax und findet vollständige Wörter
-oder Phrasen, keine beliebigen Teilzeichenketten. Weitere Beispiele und
-Details stehen in [DATABASE.md](./DATABASE.md).
+oder Phrasen in Dateinamen, extrahiertem Inhalt oder beidem, keine beliebigen
+Teilzeichenketten. Weitere Beispiele und Details stehen in
+[DATABASE.md](./DATABASE.md).
 
 ## Ablauf eines Scans
 
