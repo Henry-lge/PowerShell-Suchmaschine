@@ -200,7 +200,9 @@ param(
     [int]$BorrowTimeoutMilliseconds,
     $Queue,
     $Results,
-    $Paths
+    $Paths,
+    [long]$EnrichedModulus,
+    [long]$EnrichedMarker
 )
 
 $startError = $null
@@ -307,8 +309,14 @@ while ($true) {
 
         $batch = [object[]]::new($items.Count)
 
+        # Ergänzte Dateien bekommen die Markierung in IndexedAtUtc (siehe
+        # Crawler.MarkEnriched), auch wenn nichts erkannt wurde, damit sie
+        # nicht bei jedem Scan erneut verarbeitet werden.
+        $now = [datetime]::UtcNow.Ticks
+        $marked = [datetime]::new($now - ($now % $EnrichedModulus) + $EnrichedMarker, [System.DateTimeKind]::Utc)
+
         for ($i = 0; $i -lt $items.Count; $i++) {
-            $items[$i].Datei.IndexedAtUtc = [datetime]::UtcNow
+            $items[$i].Datei.IndexedAtUtc = if ($items[$i].Enrich) { $marked } else { [datetime]::UtcNow }
             $batch[$i] = $items[$i].Datei
         }
 
@@ -978,6 +986,21 @@ class Crawler {
                 $isUnchanged = $false
             }
 
+            # Ausnahme: Ein Foto, dessen Objekte noch nie erkannt wurden (z. B.
+            # aus einem Index von vor der Objekterkennung), wird einmal neu
+            # gelesen und dann im Hintergrund ergänzt. Sonst bliebe es für
+            # immer ohne Objekte, weil sich seine Änderungszeit nicht ändert.
+            if (
+                $isUnchanged -and
+                $this.ReadContents -and
+                -not $stored.IsCloudOnly -and
+                -not [Crawler]::IsEnriched($stored) -and
+                $this._CanUseBackground() -and
+                $this.DocScanner.CanEnrich($file)
+            ) {
+                $isUnchanged = $false
+            }
+
             if ($isUnchanged) {
                 $this._MarkUnchanged($datei, $stored)
                 return $datei
@@ -1310,7 +1333,10 @@ class Crawler {
         $datei.Content = $null
         $datei.HasContent = $false
         $datei.ContentError = $message
-        $datei.IndexedAtUtc = [datetime]::UtcNow
+
+        # Markiert wie ergänzt: Ein nicht lesbares Foto soll nicht bei jedem
+        # Scan für die Objekterkennung neu gelesen werden.
+        $datei.IndexedAtUtc = [Crawler]::MarkEnriched([datetime]::UtcNow)
 
         if ($null -eq $stored) {
             $datei.Status = [DateiStatus]::New
@@ -1585,6 +1611,28 @@ class Crawler {
     }
 
 
+    # Ob eine Datei schon im Hintergrund ergänzt wurde (z. B. Objekte auf
+    # einem Foto), steht ohne eigenes Datenbankfeld im Zeitstempel
+    # IndexedAtUtc: Nach dem Ergänzen enden seine Ticks (100 ns) innerhalb
+    # von 10 ms auf den festen Wert EnrichedMarker. Die Abweichung vom
+    # echten Zeitpunkt liegt unter 10 ms und ist nirgends sichtbar. Dass ein
+    # normaler Zeitstempel zufällig so endet, ist 1 zu 100.000.
+    hidden static [long]$EnrichedModulus = 100000
+    hidden static [long]$EnrichedMarker = 4711
+
+    static [datetime] MarkEnriched([datetime]$time) {
+        $ticks = $time.Ticks - ($time.Ticks % [Crawler]::EnrichedModulus) + [Crawler]::EnrichedMarker
+        return [datetime]::new($ticks, [System.DateTimeKind]::Utc)
+    }
+
+    static [bool] IsEnriched([Datei]$stored) {
+        return (
+            $null -ne $stored -and
+            $stored.IndexedAtUtc.Ticks % [Crawler]::EnrichedModulus -eq [Crawler]::EnrichedMarker
+        )
+    }
+
+
     # Hintergrundverarbeitung ist möglich: nur während ScanFolder, mit der
     # Datenbank aus dem Pool und ohne zur Laufzeit registrierte Reader (die
     # kennt der Hintergrund-Thread nicht).
@@ -1677,6 +1725,8 @@ class Crawler {
             [void]$shell.AddParameter("Queue", $this._backgroundQueue)
             [void]$shell.AddParameter("Results", $this._backgroundResults)
             [void]$shell.AddParameter("Paths", $this._backgroundPaths)
+            [void]$shell.AddParameter("EnrichedModulus", [Crawler]::EnrichedModulus)
+            [void]$shell.AddParameter("EnrichedMarker", [Crawler]::EnrichedMarker)
 
             $this._backgroundShell = $shell
             $this._backgroundHandle = $shell.BeginInvoke()
