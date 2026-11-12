@@ -128,18 +128,32 @@ class ImageOcrContentReader : ContentReader {
             return $this._ReadSvg($file)
         }
 
-        $metadata = [ImageMetadata]::Read($this.ReadFileBytes($file))
+        $bytes = $this.ReadFileBytes($file)
+        $metadata = [ImageMetadata]::Read($bytes)
         $recognized = ""
 
-        if ($this._ShouldRunOcr($file, $extension)) {
+        # Tesseract (Leptonica) kann keine animierten GIFs lesen und bricht
+        # mit einem Fehler ab; Vision und die Windows-Texterkennung nehmen
+        # einfach das erste Bild.
+        $skipAnimation = (
+            $this._ocrEngine -eq "Tesseract" -and
+            $extension -eq ".gif" -and
+            [ImageMetadata]::IsAnimatedGif($bytes)
+        )
+
+        if (-not $skipAnimation -and $this._ShouldRunOcr($file, $extension)) {
             try {
                 $recognized = $this._RecognizeText($file)
             }
             catch {
+                # Kann die Texterkennung das Format nicht lesen, ist das kein
+                # Fehler der Datei: Sie hat dann eben keinen erkannten Text.
+                $unsupported = [ImageOcrContentReader]::IsUnsupportedImageError($_.Exception.Message)
+
                 # Ohne Metadaten ist der Fehler das einzige Ergebnis und wird
                 # gemeldet. Sonst reichen die Metadaten; ein einzelnes nicht
                 # erkennbares Bild soll den Inhalt nicht verwerfen.
-                if ([string]::IsNullOrEmpty($metadata)) {
+                if (-not $unsupported -and [string]::IsNullOrEmpty($metadata)) {
                     throw
                 }
             }
@@ -363,6 +377,14 @@ class ImageOcrContentReader : ContentReader {
 
             throw
         }
+    }
+
+
+    # True für Meldungen, mit denen Tesseract/Leptonica ein Bildformat
+    # ablehnt, das es nicht dekodieren kann (z. B. animierte GIFs, WebP ohne
+    # libwebp). Echte Fehler wie Zeitüberschreitungen gehören nicht dazu.
+    hidden static [bool] IsUnsupportedImageError([string]$message) {
+        return $message -match "pix not read|no pix returned|not supported|Unsupported image|image file format"
     }
 
 
