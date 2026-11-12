@@ -14,6 +14,7 @@ $ProgressPreference = 'SilentlyContinue'
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $database = $null
+$useLiteral = $false
 
 try {
     
@@ -28,6 +29,10 @@ if (-not $PSBoundParameters.ContainsKey('Query')) {
 
     if ($null -ne $request.extension) {
         $Extension = [string]$request.extension
+    }
+
+    if ($null -ne $request.literal) {
+        $useLiteral = [bool]$request.literal
     }
 
     $rawMode = $request.mode
@@ -61,7 +66,34 @@ if (-not $PSBoundParameters.ContainsKey('Query')) {
         $database = Initialize-Database -DatabasePath $DatabasePath 6>$null 3>$null
 
         # Die gesamte Suchlogik liegt hinter der DB-Schnittstelle.
-        $results = @(Search-Query -Database $database -Query $Query -Limit $Limit -Extension $Extension -SearchMode $SearchMode |
+        $searchParameters = @{
+            Database = $database
+            Query = $Query
+            Limit = $Limit
+            Extension = $Extension
+            SearchMode = $SearchMode
+        }
+        if ($useLiteral) {
+            $searchParameters.Literal = $true
+        }
+
+        try {
+            $rawResults = @(Search-Query @searchParameters)
+        }
+        catch {
+            if (
+                $useLiteral -or
+                [string]::IsNullOrWhiteSpace($Query) -or
+                $_.Exception.Message -notmatch '(?i)(fts|match|syntax)'
+            ) {
+                throw
+            }
+
+            $searchParameters.Literal = $true
+            $rawResults = @(Search-Query @searchParameters)
+        }
+
+        $results = @($rawResults |
             ForEach-Object {
                 [ordered]@{
                     path = $_.File.Path
