@@ -403,17 +403,8 @@ WHERE id IN (
     [string[]] GetPathsUnder([string]$folderPath) {
         $this.EnsureOpen()
         $folder = [PathUtil]::Normalize($folderPath)
-        $prefix = $folder
-        if (-not [System.IO.Path]::EndsInDirectorySeparator($prefix)) {
-            $prefix += [System.IO.Path]::DirectorySeparatorChar
-        }
         $paths = [System.Collections.Generic.List[string]]::new()
-        $command = $this.NewCommand(
-            "SELECT directory_path, filename, extension FROM files_metadata " +
-            "WHERE directory_path = `$folderParameter " +
-            "OR directory_path IS NOT NULL;"
-        )
-        [void]$command.Parameters.AddWithValue('$folderParameter', $folder)
+        $command = $this.NewPathsUnderCommand($folder)
 
         try {
             $reader = $command.ExecuteReader()
@@ -438,6 +429,44 @@ WHERE id IN (
         }
 
         return $paths.ToArray()
+    }
+
+    # Der Aufrufer uebergibt einen normalisierten Ordner und prueft die Kandidaten
+    # weiterhin mit PathUtil.IsSameOrUnder(). NOCASE erlaubt indexierte LIKE-Suchen.
+    hidden [object] NewPathsUnderCommand([string]$folder) {
+        $prefix = $folder
+        if (-not [System.IO.Path]::EndsInDirectorySeparator($prefix)) {
+            $prefix += [System.IO.Path]::DirectorySeparatorChar
+        }
+
+        # SQLite faltet nur ASCII. Bei Unicode auf case-insensitiven Plattformen
+        # endet der sichere Suchpraefix daher vor dem ersten Nicht-ASCII-Zeichen.
+        $prefixOnly = $false
+        if ([PathUtil]::GetComparison() -eq [System.StringComparison]::OrdinalIgnoreCase) {
+            for ($index = 0; $index -lt $prefix.Length; $index++) {
+                if ([int]$prefix[$index] -gt 127) {
+                    $prefix = $prefix.Substring(0, $index)
+                    $prefixOnly = $true
+                    break
+                }
+            }
+        }
+
+        $pattern = $prefix.Replace('\', '\\').Replace('%', '\%').Replace('_', '\_') + '%'
+        $select = "SELECT directory_path, filename, extension FROM files_metadata "
+        $sql = $select + "WHERE directory_path LIKE `$prefixParameter ESCAPE '\'"
+        if (-not $prefixOnly) {
+            # Getrennte Zweige vermeiden einen OR-bedingten Index-Vollscan.
+            # Bei Wurzelordnern umfasst der LIKE-Zweig bereits direkte Dateien.
+            $sql = $select + "WHERE directory_path = `$folderParameter COLLATE NOCASE " +
+                "UNION ALL " + $sql + " AND directory_path <> `$folderParameter COLLATE NOCASE"
+        }
+        $command = $this.NewCommand($sql + ';')
+        if (-not $prefixOnly) {
+            [void]$command.Parameters.AddWithValue('$folderParameter', $folder)
+        }
+        [void]$command.Parameters.AddWithValue('$prefixParameter', $pattern)
+        return $command
     }
 
     [object[]] Search(
@@ -529,6 +558,69 @@ WHERE id IN (
             $command.Dispose()
         }
 
+        return $results.ToArray()
+    }
+
+    [object[]] SearchLiteral(
+        [string]$query,
+        [int]$limit,
+        [string]$extension,
+        [string]$searchMode
+    ) {
+        $this.EnsureOpen()
+        if ($searchMode -notin @('FileName', 'Content', 'Both')) {
+            throw 'Search mode must be FileName, Content, or Both.'
+        }
+        if ($limit -lt 1 -or $limit -gt 1000) {
+            throw 'Search limit must be between 1 and 1000.'
+        }
+        if ([string]::IsNullOrWhiteSpace($query)) { return @() }
+
+        $phrase = '"' + $query.Replace('"', '""') + '"'
+        $results = [System.Collections.Generic.List[object]]::new()
+        if ($searchMode -ne 'FileName') {
+            foreach ($result in $this.Search($phrase, $limit, $extension, 'Content')) {
+                $results.Add($result)
+            }
+        }
+        if ($searchMode -eq 'Content' -or $results.Count -ge $limit) {
+            return $results.ToArray()
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($extension)) {
+            $extension = $extension.ToLowerInvariant()
+            if (-not $extension.StartsWith('.')) { $extension = ".$extension" }
+        }
+        $pattern = '%' + $query.Replace('\', '\\').Replace('%', '\%').Replace('_', '\_') + '%'
+        $excludeContent = if ($searchMode -eq 'Both') {
+            'AND m.id NOT IN (SELECT rowid FROM files_fts WHERE files_fts.content MATCH $phraseParameter) '
+        } else { '' }
+        $command = $this.NewCommand(
+            'SELECT m.directory_path, m.filename, m.extension, m.size_bytes, ' +
+            'm.creation_time_utc_ticks, m.last_write_time_utc_ticks, ' +
+            'm.indexed_at_utc_ticks, m.has_content, m.is_cloud_only ' +
+            'FROM files_metadata AS m WHERE (m.filename || m.extension) LIKE $patternParameter ESCAPE ''\'' ' +
+            'AND ($extensionParameter IS NULL OR m.extension = $extensionParameter COLLATE NOCASE) ' +
+            $excludeContent + 'ORDER BY m.filename, m.id LIMIT $limitParameter;'
+        )
+        [void]$command.Parameters.AddWithValue('$patternParameter', $pattern)
+        [void]$command.Parameters.AddWithValue('$extensionParameter',
+            $(if ([string]::IsNullOrWhiteSpace($extension)) { [DBNull]::Value } else { $extension }))
+        [void]$command.Parameters.AddWithValue('$limitParameter', $limit - $results.Count)
+        if ($searchMode -eq 'Both') {
+            [void]$command.Parameters.AddWithValue('$phraseParameter', $phrase)
+        }
+        try {
+            $reader = $command.ExecuteReader()
+            try {
+                while ($reader.Read()) {
+                    $file = $this.ReadDatei($reader)
+                    $results.Add([PSCustomObject]@{ File = $file; Score = 0.0; Snippet = $file.Name })
+                }
+            }
+            finally { $reader.Dispose() }
+        }
+        finally { $command.Dispose() }
         return $results.ToArray()
     }
 
@@ -1022,9 +1114,14 @@ function Search-Query {
         [string]$Extension,
 
         [ValidateSet("FileName", "Content", "Both")]
-        [string]$SearchMode = "Both"
+        [string]$SearchMode = "Both",
+
+        [switch]$Literal
     )
 
+    if ($Literal) {
+        return $Database.SearchLiteral($Query, $Limit, $Extension, $SearchMode)
+    }
     return $Database.Search($Query, $Limit, $Extension, $SearchMode)
 }
 

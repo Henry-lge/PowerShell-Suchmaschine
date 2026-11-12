@@ -221,6 +221,61 @@ Describe "SqliteDateiRepository" {
         $results[0].File.Extension | Should -Be ".txt"
     }
 
+    It "searches literal punctuation in filenames without FTS syntax errors" {
+        $text = New-TestDatei -Path (Join-Path $script:testRoot 'hsw.txt')
+        $pdf = New-TestDatei -Path (Join-Path $script:testRoot 'hsw.pdf')
+        $script:database.SaveBatch([Datei[]]@($text, $pdf))
+
+        @(Search-Query -Database $script:database -Query '.txt' -Literal).File.Name | Should -Be 'hsw.txt'
+        @(Search-Query -Database $script:database -Query '.' -Literal) | Should -HaveCount 2
+        @(Search-Query -Database $script:database -Query 'hsw' -Literal) | Should -HaveCount 2
+        @(Search-Query -Database $script:database -Query '.' -Literal -Extension 'TXT').File.Name | Should -Be 'hsw.txt'
+        @(Search-Query -Database $script:database -Query '.' -Literal -Limit 1) | Should -HaveCount 1
+        @(Search-Query -Database $script:database -Query '.' -Literal -SearchMode Content) | Should -HaveCount 0
+    }
+
+    It "returns punctuation filename matches through the GUI JSON adapter" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot 'adapter.txt')
+        $script:database.Save($file)
+        $adapter = Join-Path $PSScriptRoot '../Invoke-GuiSearch.ps1'
+
+        foreach ($query in @('.txt', '.')) {
+            $request = @{ query = $query; limit = 100 } | ConvertTo-Json -Compress
+            $json = $request | & (Get-Process -Id $PID).Path -NoProfile -NonInteractive `
+                -File $adapter -DatabasePath $script:databasePath
+            $response = $json | ConvertFrom-Json
+            $response.ok | Should -BeTrue
+            $response.count | Should -Be 1
+            $response.results[0].fileName | Should -Be 'adapter.txt'
+        }
+    }
+
+    It "escapes wildcard characters and FTS quotes in literal searches" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot 'rate_100%.txt')
+        $other = New-TestDatei -Path (Join-Path $script:testRoot 'rateX100x.txt')
+        $file.Content = 'quoted content marker'
+        $script:database.SaveBatch([Datei[]]@($file, $other))
+
+        @(Search-Query -Database $script:database -Query '_100%' -Literal -SearchMode FileName).File.Name |
+            Should -Be 'rate_100%.txt'
+        @(Search-Query -Database $script:database -Query '"quoted content"' -Literal -SearchMode Content) |
+            Should -HaveCount 1
+        @(Search-Query -Database $script:database -Query 'quoted OR missing' -Literal -SearchMode Content) |
+            Should -HaveCount 0
+        @(Search-Query -Database $script:database -Query 'quoted OR missing' -SearchMode Content) |
+            Should -HaveCount 1
+    }
+
+    It "deduplicates content and filename matches in literal searches" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot 'marker.txt')
+        $file.Content = 'marker appears here'
+        $script:database.Save($file)
+
+        @(Search-Query -Database $script:database -Query 'marker' -Literal) | Should -HaveCount 1
+        @(Search-Query -Database $script:database -Query 'marker' -Literal -SearchMode FileName) | Should -HaveCount 1
+        @(Search-Query -Database $script:database -Query 'marker' -Literal -SearchMode Content) | Should -HaveCount 1
+    }
+
     It "returns no results for blank queries and unmatched terms" {
         $file = New-TestDatei -Path (Join-Path $script:testRoot "notes.txt")
         $script:database.Save($file)
@@ -325,6 +380,148 @@ END;
 
         $paths | Should -HaveCount 1
         $paths[0] | Should -Be $wildcardFolder.Path
+    }
+
+    It "returns direct and deeply nested files but not sibling-prefix folders" {
+        $folder = Join-Path $script:testRoot "scope"
+        $direct = New-TestDatei -Path (Join-Path $folder "direct.txt")
+        $nested = New-TestDatei -Path (Join-Path $folder "child/deep/nested.txt")
+        $sibling = New-TestDatei -Path (Join-Path "$folder-other" "outside.txt")
+        $script:database.SaveBatch([Datei[]]@($direct, $nested, $sibling))
+
+        $paths = $script:database.GetPathsUnder($folder)
+
+        $paths | Should -HaveCount 2
+        $paths | Should -Contain $direct.Path
+        $paths | Should -Contain $nested.Path
+    }
+
+    It "accepts a trailing separator without changing the result" {
+        $folder = Join-Path $script:testRoot "scope"
+        $file = New-TestDatei -Path (Join-Path $folder "child/inside.txt")
+        $script:database.Save($file)
+
+        $paths = $script:database.GetPathsUnder(
+            $folder + [System.IO.Path]::DirectorySeparatorChar
+        )
+
+        $paths | Should -HaveCount 1
+        $paths[0] | Should -Be $file.Path
+    }
+
+    It "finds direct and nested paths when the requested folder is a filesystem root" {
+        $root = [System.IO.Path]::GetPathRoot($script:testRoot)
+        $direct = New-TestDatei -Path (Join-Path $root "root-level.txt")
+        $nested = New-TestDatei -Path (Join-Path $script:testRoot "child/nested.txt")
+        $script:database.SaveBatch([Datei[]]@($direct, $nested))
+
+        $paths = $script:database.GetPathsUnder($root)
+
+        $paths | Should -HaveCount 2
+        $paths | Should -Contain $direct.Path
+        $paths | Should -Contain $nested.Path
+    }
+
+    It "keeps platform-specific ASCII path casing semantics" {
+        $folder = Join-Path $script:testRoot "CaseScope"
+        $file = New-TestDatei -Path (Join-Path $folder "child/inside.txt")
+        $script:database.Save($file)
+
+        $paths = @($script:database.GetPathsUnder(
+            (Join-Path $script:testRoot "casescope")
+        ))
+
+        if ($IsLinux) {
+            $paths | Should -HaveCount 0
+        }
+        else {
+            $paths | Should -HaveCount 1
+            $paths[0] | Should -BeExactly $file.Path
+        }
+    }
+
+    It "keeps platform-specific Unicode path casing semantics" {
+        $folder = Join-Path $script:testRoot "unicode/Äpfel"
+        $direct = New-TestDatei -Path (Join-Path $folder "direct.txt")
+        $nested = New-TestDatei -Path (Join-Path $folder "child/nested.txt")
+        $outside = New-TestDatei -Path (Join-Path $script:testRoot "unicode/Andere/outside.txt")
+        $script:database.SaveBatch([Datei[]]@($direct, $nested, $outside))
+
+        $paths = @($script:database.GetPathsUnder(
+            (Join-Path $script:testRoot "unicode/äpfel")
+        ))
+
+        if ($IsLinux) {
+            $paths | Should -HaveCount 0
+        }
+        else {
+            $paths | Should -HaveCount 2
+            $paths | Should -Contain $direct.Path
+            $paths | Should -Contain $nested.Path
+        }
+        $script:database.GetPathsUnder($folder) | Should -HaveCount 2
+    }
+
+    It "returns no paths for an absent folder in a populated index" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot "other/inside.txt")
+        $script:database.Save($file)
+
+        @($script:database.GetPathsUnder(
+            (Join-Path $script:testRoot "absent")
+        )) | Should -HaveCount 0
+    }
+
+    It "narrows SQL candidates and treats LIKE metacharacters literally" {
+        # ASCII root keeps this a selective-query test even with a Unicode temp path.
+        $root = [System.IO.Path]::GetPathRoot($script:testRoot)
+        $folder = Join-Path $root "query%_scope"
+        if ($IsLinux) { $folder += '\literal' }
+        # Path.Combine preserves a literal backslash on Linux; Join-Path rewrites it.
+        $direct = New-TestDatei -Path ([System.IO.Path]::Combine($folder, "direct.txt"))
+        $nested = New-TestDatei -Path (
+            [System.IO.Path]::Combine($folder, "child", "nested.txt")
+        )
+        $sibling = New-TestDatei -Path (
+            [System.IO.Path]::Combine("$folder-other", "outside.txt")
+        )
+        $wildcardMatch = New-TestDatei -Path (
+            [System.IO.Path]::Combine($folder.Replace('%_', 'XX'), "child", "outside.txt")
+        )
+        $script:database.SaveBatch([Datei[]]@($direct, $nested, $sibling, $wildcardMatch))
+        $command = $script:database.NewPathsUnderCommand($folder)
+        try {
+            $reader = $command.ExecuteReader()
+            try {
+                $count = 0
+                while ($reader.Read()) { $count++ }
+            }
+            finally { $reader.Dispose() }
+        }
+        finally { $command.Dispose() }
+
+        # Unlike public-result tests, this fails if SQL again returns the entire index.
+        $count | Should -Be 2
+        $script:database.GetPathsUnder($folder) | Should -HaveCount 2
+    }
+
+    It "uses indexed searches for the actual folder candidate query" {
+        $root = [System.IO.Path]::GetPathRoot($script:testRoot)
+        $folder = Join-Path $root "query-plan-scope"
+        $command = $script:database.NewPathsUnderCommand($folder)
+        $command.CommandText = "EXPLAIN QUERY PLAN " + $command.CommandText
+        $details = [System.Collections.Generic.List[string]]::new()
+        try {
+            $reader = $command.ExecuteReader()
+            try {
+                while ($reader.Read()) { $details.Add([string]$reader['detail']) }
+            }
+            finally { $reader.Dispose() }
+        }
+        finally { $command.Dispose() }
+
+        # Check the access strategy, not version-dependent index names or plan IDs.
+        ($details -join "`n") | Should -Match 'SEARCH files_metadata .*directory_path'
+        ($details -join "`n") | Should -Not -Match 'SCAN files_metadata'
     }
 
     It "retrieves many paths in bounded SQLite batches" {
