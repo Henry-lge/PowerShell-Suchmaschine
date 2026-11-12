@@ -13,14 +13,14 @@ Eine Erklärung des restlichen Codes steht in der
 ```mermaid
 flowchart LR
     FS["Dateisystem"] --> C["Crawler"]
-    C -->|Get(path)| M["files_metadata"]
-    C -->|neue/geänderte Datei| R["DocScanner + Reader"]
-    R -->|Klartext + HasContent| C
-    C -->|SaveBatch| TX["SQLite-Transaktion"]
+    C -->|"Get(path)"| M["files_metadata"]
+    C -->|"neue/geänderte Datei"| R["DocScanner + Reader"]
+    R -->|"Klartext + HasContent"| C
+    C -->|"SaveBatch"| TX["SQLite-Transaktion"]
     TX --> M
     TX --> F["files_fts"]
     Q["Search-Query"] --> F
-    F -->|rowid = files_metadata.id| J["JOIN files_metadata"]
+    F -->|"rowid = files_metadata.id"| J["JOIN files_metadata"]
     M --> J
     J --> RESULT["File-Metadaten + Snippet + Score"]
 ```
