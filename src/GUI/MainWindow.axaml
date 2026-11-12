@@ -5,8 +5,8 @@
         xmlns:local="using:FileSearcherApp"
         x:Class="FileSearcherApp.MainWindow"
         Title="Dateisuche über Powershell"
-        Width="650"
-        Height="450"
+        Width="950"
+        Height="550"
         Icon="avares://FileSearcherApp/GUIAssets/logo.png"
         Background="#0c3835">
 
@@ -100,6 +100,18 @@
         </Grid>
 
          <!-- Ergebnisliste -->
+<!-- Tabellenkopf -->
+        <Border Grid.Row="3"
+                BorderBrush="#408AABAA" BorderThickness="0,0,0,1"
+                Padding="12,6,28,6">
+        <Grid ColumnDefinitions="2*,60,130,3*" ColumnSpacing="12">
+            <TextBlock Grid.Column="0" Text="Datei"    FontWeight="Bold" Foreground="#8AABAA"/>
+            <TextBlock Grid.Column="1" Text="Typ"      FontWeight="Bold" Foreground="#8AABAA"/>
+            <TextBlock Grid.Column="2" Text="Geändert" FontWeight="Bold" Foreground="#8AABAA"/>
+            <TextBlock Grid.Column="3" Text="Pfad"     FontWeight="Bold" Foreground="#8AABAA"/>
+        </Grid>
+        </Border>
+
         <ListBox Grid.Row="4"
                  x:Name="ResultsList"
                  HorizontalAlignment="Stretch"
@@ -107,7 +119,7 @@
                  Background="#001816"
                  Foreground="#8AABAA"
                  ScrollViewer.VerticalScrollBarVisibility="Auto"
-                 ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
 
             <ListBox.Styles>
                 <Style Selector="ListBoxItem">
@@ -135,8 +147,12 @@
                                            TextTrimming="CharacterEllipsis"/>
                             </StackPanel>
                         </ToolTip.Tip>
-
-                        <TextBlock Text="{Binding}" TextTrimming="CharacterEllipsis"/>
+                        <Grid ColumnDefinitions="2*,60,130,3*" ColumnSpacing="12">
+                        <TextBlock Grid.Column="0" Text="{Binding FileName}" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock Grid.Column="1" Text="{Binding Extension}" Opacity="0.8"/>
+                        <TextBlock Grid.Column="2" Text="{Binding LastWriteText}" Opacity="0.8" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock Grid.Column="3" Text="{Binding Path}" Opacity="0.8" TextTrimming="CharacterEllipsis"/>
+                        </Grid>
                     </Border>
                 </DataTemplate>
             </ListBox.DataTemplates>
