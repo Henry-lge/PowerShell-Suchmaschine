@@ -70,6 +70,11 @@ class ImageOcrContentReader : ContentReader {
     [double]$MinVisionConfidence = 0.3
     [double]$MinYoloConfidence = 0.4
 
+    # Kleinere Bilder bekommen keine Objekterkennung. Bewusst viel kleiner
+    # als MinOcrBytes: Auch ein kleines Vorschaubild zeigt erkennbar eine
+    # Katze, und die Erkennung kostet nur Millisekunden.
+    [long]$MinObjectBytes = 1KB
+
     # Höchstens so viele Begriffe pro Bild (Vision liefert sonst sehr
     # allgemeine wie "structure" oder "material").
     [int]$MaxObjectLabels = 8
@@ -415,7 +420,7 @@ class ImageOcrContentReader : ContentReader {
     [bool] CanEnrich([System.IO.FileInfo]$file) {
         $engine = $this._GetObjectEngine()
 
-        if ([string]::IsNullOrEmpty($engine) -or $file.Length -lt $this.MinOcrBytes) {
+        if ([string]::IsNullOrEmpty($engine) -or $file.Length -lt $this.MinObjectBytes) {
             return $false
         }
 

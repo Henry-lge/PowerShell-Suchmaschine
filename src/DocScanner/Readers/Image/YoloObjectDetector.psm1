@@ -115,7 +115,8 @@ function Initialize-YoloDetector {
     $outputValue = $create.MakeGenericMethod([float]).Invoke($null, @($output, [long[]]@(1, 300, 6)))
 
     # JPEG kann schon beim Dekodieren verkleinert werden; das spart den
-    # größten Teil der Zeit bei großen Fotos.
+    # größten Teil der Zeit bei großen Fotos. Nur für Bilder über 640 Pixel
+    # (siehe Get-YoloPixel).
     $decoderOptions = [SixLabors.ImageSharp.Formats.DecoderOptions]::new()
     $decoderOptions.TargetSize = [SixLabors.ImageSharp.Size]::new(640, 640)
 
@@ -265,7 +266,20 @@ function Get-YoloPixel {
     param([string]$Path)
 
     $state = $script:Yolo
-    $image = [SixLabors.ImageSharp.Image]::Load($state.DecoderOptions, $Path)
+
+    # Kleinere Bilder würde der Decoder mit TargetSize blockig auf 640 Pixel
+    # vergrößern (wie "Nearest Neighbor"); darauf erkennt YOLO kaum noch
+    # etwas (eine Katze: 0,01 statt 0,90). Deshalb wird nur verkleinert;
+    # die Größe steht im Dateikopf, Identify dekodiert das Bild dafür nicht.
+    $info = [SixLabors.ImageSharp.Image]::Identify($Path)
+
+    if ([Math]::Max($info.Width, $info.Height) -gt 640) {
+        $image = [SixLabors.ImageSharp.Image]::Load($state.DecoderOptions, $Path)
+    }
+    else {
+        $image = [SixLabors.ImageSharp.Image]::Load($Path)
+    }
+
     $stream = [System.IO.MemoryStream]::new()
 
     try {
