@@ -1114,7 +1114,9 @@ function Search-Query {
         [string]$Extension,
 
         [ValidateSet("FileName", "Content", "Both")]
-        [string]$SearchMode
+        [string]$SearchMode = "Both",
+
+        [switch]$Literal
     )
 
     if ($Literal) {
