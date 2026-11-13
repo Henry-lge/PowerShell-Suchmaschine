@@ -11,7 +11,7 @@ Eine ausführliche Erklärung der Klassen, Reader und Abläufe steht in der
 ## Voraussetzungen
 
 - PowerShell 7.4 oder neuer
-- .Net 10.0  Download: https://dotnet.microsoft.com/en-us/download/dotnet/10.0
+- .Net 10.0 oder neuer Download: https://dotnet.microsoft.com/en-us/download/dotnet/10.0
 - Für SQLite: Internetzugriff beim erstmaligen Einrichten der SQLite-Laufzeit
   (NuGet-Pakete werden heruntergeladen)
 - Für bestimmte Archivformate: `tar` oder 7-Zip, abhängig vom Format und den
@@ -24,6 +24,9 @@ Im Projektverzeichnis:
 ```powershell
 pwsh -File ./PowerShell-Suchmaschine.ps1
 ```
+
+Nach Eingabe des Befehls erscheint eine GUI für den Benutzer. Details zu allen Aspekten der
+Gui findet sich in: [GUI.md](./GUI.md)
 
 Standardmäßig wird das Benutzerverzeichnis (`$HOME`) gescannt. Ein anderer
 Startordner und zusätzliche auszuschließende absolute Ordnerpfade lassen sich
@@ -53,14 +56,6 @@ Die Suchabfrage verwendet SQLite FTS5-Syntax und findet vollständige Wörter
 oder Phrasen in Dateinamen, extrahiertem Inhalt oder beidem, keine beliebigen
 Teilzeichenketten. Weitere Beispiele und Details stehen in
 [DATABASE.md](./DATABASE.md).
-
-### Grafische Oberfläche
-
-Nach dem Erstellen des Index kann die GUI im Projektverzeichnis gestartet werden:
-
-```bash
-dotnet run --project src/GUI/FileSearcherApp.csproj
-```
 
 Die GUI behandelt die Eingabe als normalen Suchtext. Bei Dateinamen findet sie
 auch Teilzeichenfolgen wie `.txt` oder `.`. Inhalte werden weiterhin als
