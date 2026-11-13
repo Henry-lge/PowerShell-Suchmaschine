@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.RegularExpressions;
 
 namespace FileSearcherApp
 {
@@ -14,6 +15,14 @@ namespace FileSearcherApp
         string Path, string FileName, string Extension,
         DateTime LastWriteUtc, string Snippet, double Score, string MatchedIn = "")
     {
+        //Text für den Tooltip: Leerzeichen und Zeilenumbrüche aus dem Snippet werden zusammengezogen
+        public string Preview =>
+        string.IsNullOrWhiteSpace(Snippet)
+            ? "Keine Vorschau verfügbar."
+            : Regex.Replace(Snippet, @"\s+", " ").Trim();
+        
+        //Änderungsdatum für Tooltip: in Lokalzeit, für den Tooltip
+        public string LastWriteText => LastWriteUtc.ToLocalTime().ToString("g");
         public override string ToString() =>
         string.IsNullOrEmpty(MatchedIn) ? $"{FileName} — {Path}"
                                         : $"[{MatchedIn}] {FileName} — {Path}";
@@ -84,8 +93,21 @@ namespace FileSearcherApp
             using (proc)
             using (ct.Register(() => { try { proc.Kill(true); } catch { } }))
             {
-                var request = JsonSerializer.Serialize(
-                    new { query, limit, extension, prefix = true, mode }, Json);
+                var normalizedMode = mode.Trim().ToLowerInvariant();
+
+if (normalizedMode is not ("filename" or "content" or "both"))
+    throw new SearchException($"Ungültiger Suchmodus: {mode}");
+
+var request = JsonSerializer.Serialize(
+    new
+    {
+        query,
+        limit,
+        extension,
+        literal = true,
+        mode = normalizedMode
+    },
+    Json);
                 await proc.StandardInput.WriteAsync(request);
                 proc.StandardInput.Close();
 
