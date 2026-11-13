@@ -10,12 +10,8 @@ namespace FileSearcherApp
             InitializeComponent();
         }
 
-    
 
-        // =========================================================================
-        // NEU: Helfermethoden für App.axaml.cs (aktualisieren Status & Ladebalken)
-        // =========================================================================
-
+        //Status-Text 
         public void UpdateStatus(string message)
         {
             Dispatcher.UIThread.Post(() =>
@@ -24,6 +20,7 @@ namespace FileSearcherApp
             });
         }
 
+        //Lade-Balken
         public void UpdateProgress(double value, bool isIndeterminate = false)
         {
             Dispatcher.UIThread.Post(() =>

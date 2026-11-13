@@ -104,7 +104,7 @@ var request = JsonSerializer.Serialize(
         query,
         limit,
         extension,
-        prefix = true,
+        literal = true,
         mode = normalizedMode
     },
     Json);

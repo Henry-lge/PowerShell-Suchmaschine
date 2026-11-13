@@ -8,9 +8,8 @@
          Icon="avares://FileSearcherApp/GUIAssets/icon.png"
         Background="#0c3835">
     
-    <!-- <- GEÄNDERT: RowDefinitions auf "Auto,Auto,Auto" erweitert für den Ladebalken -->
+    <!-- Logo  -->
     <Grid VerticalAlignment="Center" HorizontalAlignment="Center" RowDefinitions="Auto,Auto,Auto">
-        <!-- Logo / Titel mit korrektem avares:// Pfad -->
         <Image Grid.Row="0"        
                Source="avares://FileSearcherApp/GUIAssets/logo.png"          
                Width="605" Height="140" 
@@ -18,7 +17,6 @@
                VerticalAlignment="Top"/>
 
         <!-- Hinweistext / Statusmeldung -->
-        <!-- <- GEÄNDERT: x:Name="StatusTextBlock" hinzugefügt -->
         <TextBlock Grid.Row="1" 
                    x:Name="StatusTextBlock" 
                    Text="Starte PowerShell-Umgebung..." 
