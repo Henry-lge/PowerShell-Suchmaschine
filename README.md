@@ -22,7 +22,7 @@ Eine ausführliche Erklärung der Klassen, Reader und Abläufe steht in der
 Im Projektverzeichnis:
 
 ```powershell
-pwsh -File ./suchmaschine.ps1
+pwsh -File ./PowerShell-Suchmaschine.ps1
 ```
 
 Standardmäßig wird das Benutzerverzeichnis (`$HOME`) gescannt. Ein anderer
