@@ -95,13 +95,16 @@ namespace FileSearcherApp
 
                 string scanFolder = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
+                string escapedCrawlerModulePath = crawlerModulePath.Replace("'", "''");
+                string escapedScanFolder = scanFolder.Replace("'", "''");
+
                 string psCommand = $@"
-                    using module '{crawlerModulePath}'; 
+                    using module '{escapedCrawlerModulePath}'; 
                     $c = [Crawler]::new(); 
                     $c.ProgressOutput = $true; 
                     $c.ProgressInterval = 100; 
                     try {{ 
-                        $c.ScanFolder('{scanFolder}') 
+                        $c.ScanFolder('{escapedScanFolder}') 
                     }} 
                     finally {{ 
                         $c.Dispose() 
