@@ -7,7 +7,7 @@
         Title="Dateisuche über Powershell"
         Width="650"
         Height="450"
-        Icon="avares://FileSearcherApp/GUIAssets/logo.png"
+        Icon="avares://FileSearcherApp/GUIAssets/icon.png"
         Background="#0c3835">
 
     <Grid Margin="20" RowDefinitions="Auto,Auto,Auto,Auto,*">
