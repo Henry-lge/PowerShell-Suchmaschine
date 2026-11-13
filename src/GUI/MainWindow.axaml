@@ -120,6 +120,8 @@
                     <Border Background="Transparent"
                             HorizontalAlignment="Stretch"
                             Padding="12,9"
+                            Tapped="OnSearchHitTapped"
+                            Cursor="Hand"
                             ToolTip.ShowDelay="400"
                             ToolTip.Placement="Right">
 

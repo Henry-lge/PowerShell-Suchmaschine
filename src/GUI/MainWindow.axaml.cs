@@ -4,6 +4,8 @@ using System.Collections.Generic;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using System.Diagnostics;
+using System.IO;
 
 namespace FileSearcherApp
 {
@@ -83,6 +85,37 @@ namespace FileSearcherApp
                 PerformSearch();
             }
         }
+
+        private void OnSearchHitTapped(object? sender, TappedEventArgs e)
+{
+    if (sender is not Border border ||
+        border.DataContext is not SearchHit hit)
+    {
+        return;
+    }
+
+    e.Handled = true;
+
+    if (!File.Exists(hit.Path))
+    {
+        ResultsCountText.Text = "Datei nicht mehr vorhanden.";
+        return;
+    }
+
+    try
+    {
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = hit.Path,
+            UseShellExecute = true
+        });
+    }
+    catch (Exception ex)
+        {
+            ResultsCountText.Text = "Datei konnte nicht geöffnet werden.";
+            ResultsCountText.SetValue(ToolTip.TipProperty, ex.Message);
+        }
+    }
 
         private async void PerformSearch()
         {
