@@ -1,16 +1,18 @@
 using System;
-using System.Diagnostics;
-using System.IO;
-using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Avalonia;
+using Avalonia.Controls; // <--- NEU: Für den Abfrage-Dialog (Window, Button, StackPanel, Border)
 using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Layout; // <--- NEU: Für HorizontalAlignment / VerticalAlignment
 using Avalonia.Markup.Xaml;
+using Avalonia.Media; // <--- NEU: Für Farb-Styling des Dialogs passend zum SplashScreen
 
 namespace FileSearcherApp
 {
     public partial class App : Application
     {
+        public static CrawlerService CrawlerService { get; } = new CrawlerService();
+
         public override void Initialize()
         {
             AvaloniaXamlLoader.Load(this);
@@ -20,12 +22,13 @@ namespace FileSearcherApp
         {
             if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
             {
+                desktop.Exit += (_, _) => CrawlerService.StopScan();
+
                 var splashScreen = new SplashScreenWindow();
 
                 desktop.MainWindow = splashScreen;
                 splashScreen.Show();
 
-                // Startet den gesamten Initialisierungs- und Scan-Prozess im Hintergrund
                 _ = InitializeApplicationAsync(desktop, splashScreen);
             }
 
@@ -38,10 +41,36 @@ namespace FileSearcherApp
         {
             try
             {
-                // Echten Crawler-Scan im Hintergrund ausführen
-                await Task.Run(() => StartCrawlerScan(splashScreen));
+                // =====================================================================
+                // NEU: Prüfen, ob bereits eine Datenbank existiert, und ggf. nachfragen
+                // =====================================================================
+                if (CrawlerService.TryGetExistingDatabaseLastWriteTime(out DateTime lastUpdated))
+                {
+                    splashScreen.UpdateStatus("Bestehende Datenbank gefunden...");
 
-                // Nach erfolgreichem Scan Hauptfenster laden
+                    bool shouldRescan = await AskForRescanAsync(splashScreen, lastUpdated);
+
+                    if (shouldRescan)
+                    {
+                        splashScreen.UpdateStatus("Starte erneuten Hintergrund-Scan...");
+                        CrawlerService.StartBackgroundScan();
+                        await Task.Delay(800);
+                    }
+                    else
+                    {
+                        CrawlerService.SkipInitialScan(lastUpdated);
+                    }
+                }
+                else
+                {
+                    // Noch keine Datenbank vorhanden -> direkt ersten Scan starten
+                    splashScreen.UpdateStatus("Erstelle neuen Suchindex...");
+                    CrawlerService.StartBackgroundScan();
+                    await Task.Delay(1200);
+                }
+                // =====================================================================
+
+                // Hauptfenster laden (Suche ist sofort nutzbar)
                 var mainWindow = new MainWindow();
                 desktop.MainWindow = mainWindow;
                 mainWindow.Show();
@@ -70,98 +99,98 @@ namespace FileSearcherApp
             }
         }
 
-        private void StartCrawlerScan(SplashScreenWindow splashScreen)
+        // =========================================================================
+        // NEU: Bestätigungsdialog mit Datum der letzten Datenbank-Aktualisierung
+        // =========================================================================
+        private async Task<bool> AskForRescanAsync(Window owner, DateTime lastUpdated)
         {
-            try
+            bool rescanConfirmed = false;
+
+            var dialog = new Window
             {
-                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-                
-                string? currentDir = baseDir;
-                while (currentDir != null && !File.Exists(Path.Combine(currentDir, "PowerShell-Suchmaschine.sln")) && Path.GetFileName(currentDir) != "PowerShell-Suchmaschine")
-                {
-                    var parent = Directory.GetParent(currentDir);
-                    if (parent == null) break;
-                    currentDir = parent.FullName;
-                }
+                Title = "Suchindex aktualisieren?",
+                Width = 460,
+                Height = 200,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                CanResize = false,
+                SystemDecorations = SystemDecorations.BorderOnly,
+                Background = new SolidColorBrush(Color.Parse("#0c3835"))
+            };
 
-                string projectRoot = currentDir ?? Path.GetFullPath(Path.Combine(baseDir, "../../../"));
-                string crawlerModulePath = Path.Combine(projectRoot, "src", "Crawler", "Crawler.psm1");
-
-                if (!File.Exists(crawlerModulePath))
-                {
-                    Console.WriteLine($"[FEHLER] Modul nicht gefunden unter: {crawlerModulePath}");
-                    return;
-                }
-
-                string scanFolder = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-
-                string escapedCrawlerModulePath = crawlerModulePath.Replace("'", "''");
-                string escapedScanFolder = scanFolder.Replace("'", "''");
-
-                string psCommand = $@"
-                    using module '{escapedCrawlerModulePath}'; 
-                    $c = [Crawler]::new(); 
-                    $c.ProgressOutput = $true; 
-                    $c.ProgressInterval = 100; 
-                    try {{ 
-                        $c.ScanFolder('{escapedScanFolder}') 
-                    }} 
-                    finally {{ 
-                        $c.Dispose() 
-                    }}";
-
-                var startInfo = new ProcessStartInfo
-                {
-                    FileName = "pwsh",
-                    Arguments = $"-NoProfile -NonInteractive -Command \"{psCommand}\"",
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                };
-
-                using var process = new Process { StartInfo = startInfo };
-
-                process.OutputDataReceived += (sender, e) =>
-                {
-                    if (string.IsNullOrWhiteSpace(e.Data)) return;
-
-                    if (e.Data.StartsWith("Scanned:"))
-                    {
-                        var match = Regex.Match(e.Data, @"Scanned:\s*(\d+)");
-                        if (match.Success)
-                        {
-                            string count = match.Groups[1].Value;
-                            splashScreen.UpdateStatus($"Dateien werden indiziert... ({count} verarbeitet)");
-                        }
-                    }
-                    else if (e.Data.StartsWith("Read:"))
-                    {
-                        var match = Regex.Match(e.Data, @"Read:\s*(\d+)\s*of\s*(\d+)");
-                        if (match.Success &&
-                            double.TryParse(match.Groups[1].Value, out double done) &&
-                            double.TryParse(match.Groups[2].Value, out double total))
-                        {
-                            if (total > 0)
-                            {
-                                double percent = (done / total) * 100;
-                                splashScreen.UpdateProgress(percent, isIndeterminate: false);
-                                splashScreen.UpdateStatus($"Dateiinhalte werden gelesen... ({done}/{total})");
-                            }
-                        }
-                    }
-                };
-
-                process.Start();
-                process.BeginOutputReadLine();
-                process.WaitForExit();
-
-                splashScreen.UpdateStatus("Fertiggestellt!");
-            }
-            catch (Exception ex)
+            var yesButton = new Button
             {
-                Console.WriteLine($"Prozess-Fehler: {ex.Message}");
-            }
+                Content = "Ja, erneut scannen",
+                Background = new SolidColorBrush(Color.Parse("#196b65")),
+                Foreground = Brushes.White,
+                Padding = new Thickness(14, 8),
+                Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand)
+            };
+
+            var noButton = new Button
+            {
+                Content = "Nein, bestehenden Index nutzen",
+                Background = new SolidColorBrush(Color.Parse("#082624")),
+                Foreground = new SolidColorBrush(Color.Parse("#80A09F")),
+                Padding = new Thickness(14, 8),
+                Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand)
+            };
+
+            yesButton.Click += (_, _) =>
+            {
+                rescanConfirmed = true;
+                dialog.Close();
+            };
+
+            noButton.Click += (_, _) =>
+            {
+                rescanConfirmed = false;
+                dialog.Close();
+            };
+
+            var buttonPanel = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Spacing = 10,
+                Margin = new Thickness(0, 15, 0, 0),
+                Children = { noButton, yesButton }
+            };
+
+            var contentPanel = new StackPanel
+            {
+                Margin = new Thickness(24),
+                Spacing = 10,
+                VerticalAlignment = VerticalAlignment.Center,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "Vorhandener Suchindex gefunden",
+                        FontSize = 16,
+                        FontWeight = FontWeight.Bold,
+                        Foreground = Brushes.White
+                    },
+                    new TextBlock
+                    {
+                        Text = $"Es existiert bereits eine Datenbank (letzte Aktualisierung am {lastUpdated:dd.MM.yyyy 'um' HH:mm 'Uhr'}).\nMöchtest du den Ordner erneut scannen?",
+                        FontSize = 13,
+                        Foreground = new SolidColorBrush(Color.Parse("#B8D0CF")),
+                        TextWrapping = TextWrapping.Wrap
+                    },
+                    buttonPanel
+                }
+            };
+
+            dialog.Content = new Border
+            {
+                BorderBrush = new SolidColorBrush(Color.Parse("#196b65")),
+                BorderThickness = new Thickness(1),
+                Child = contentPanel
+            };
+
+            await dialog.ShowDialog(owner);
+            return rescanConfirmed;
         }
+        // =========================================================================
     }
 }

@@ -1,32 +1,43 @@
 using Avalonia.Controls;
-using Avalonia.Threading; // <--- NEU: Für Dispatcher.UIThread
+using Avalonia.Threading;
 
 namespace FileSearcherApp
 {
     public partial class SplashScreenWindow : Window
     {
+        // <--- NEU: Referenzen auf die XAML-Steuerelemente
+        private readonly TextBlock? _statusTextBlock;
+        private readonly ProgressBar? _crawlerProgressBar;
+
         public SplashScreenWindow()
         {
             InitializeComponent();
+
+            // <--- NEU: Steuerelemente sicher verknüpfen
+            _statusTextBlock = this.FindControl<TextBlock>("StatusTextBlock");
+            _crawlerProgressBar = this.FindControl<ProgressBar>("CrawlerProgressBar");
         }
 
-
-        //Status-Text 
         public void UpdateStatus(string message)
         {
             Dispatcher.UIThread.Post(() =>
             {
-                StatusTextBlock.Text = message;
+                if (_statusTextBlock != null)
+                {
+                    _statusTextBlock.Text = message;
+                }
             });
         }
 
-        //Lade-Balken
         public void UpdateProgress(double value, bool isIndeterminate = false)
         {
             Dispatcher.UIThread.Post(() =>
             {
-                CrawlerProgressBar.IsIndeterminate = isIndeterminate;
-                CrawlerProgressBar.Value = value;
+                if (_crawlerProgressBar != null)
+                {
+                    _crawlerProgressBar.IsIndeterminate = isIndeterminate;
+                    _crawlerProgressBar.Value = value;
+                }
             });
         }
     }

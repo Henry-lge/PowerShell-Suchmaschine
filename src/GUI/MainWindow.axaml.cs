@@ -1,9 +1,9 @@
-
 using System;
 using System.Collections.Generic;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Threading; // <--- NEU: Für thread-sichere UI-Updates aus dem Hintergrund
 
 namespace FileSearcherApp
 {
@@ -29,9 +29,77 @@ namespace FileSearcherApp
             SearchBox.KeyDown += OnSearchKeyDown;
 
             UpdateSearchWatermark();
+
+            // <--- NEU: Statusleiste & Fortschrittsbalken mit dem Hintergrund-Crawler verbinden
+            InitializeCrawlerStatus();
         }
 
-     
+        // =========================================================================
+        // NEU: Live-Status, Ladebalken & Phase-2-Restzeit aus CrawlerService anzeigen
+        // =========================================================================
+        private void InitializeCrawlerStatus()
+        {
+            var statusText = this.FindControl<TextBlock>("ScanStatusText");
+            var progressBar = this.FindControl<ProgressBar>("ScanProgressBar");
+
+            // Aktuellen Stand direkt beim Öffnen des Fensters übernehmen
+            if (statusText != null)
+            {
+                statusText.Text = App.CrawlerService.CurrentStatus;
+            }
+
+            if (progressBar != null)
+            {
+                progressBar.IsVisible = App.CrawlerService.IsScanning;
+                progressBar.IsIndeterminate = App.CrawlerService.IsIndeterminate;
+                progressBar.Value = App.CrawlerService.CurrentProgress;
+            }
+
+            // Event-Handler für Live-Updates definieren
+            void OnStatusChanged(string status) =>
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (statusText != null)
+                    {
+                        statusText.Text = status;
+                    }
+                });
+
+            void OnProgressChanged(double val, bool isIndeterminate) =>
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (progressBar != null)
+                    {
+                        progressBar.IsVisible = true;
+                        progressBar.IsIndeterminate = isIndeterminate;
+                        progressBar.Value = val;
+                    }
+                });
+
+            void OnScanCompleted() =>
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (progressBar != null)
+                    {
+                        progressBar.IsVisible = false;
+                    }
+                });
+
+            // Events abonnieren
+            App.CrawlerService.StatusChanged += OnStatusChanged;
+            App.CrawlerService.ProgressChanged += OnProgressChanged;
+            App.CrawlerService.ScanCompleted += OnScanCompleted;
+
+            // Events beim Schließen des Fensters sauber abmelden
+            Closed += (_, _) =>
+            {
+                App.CrawlerService.StatusChanged -= OnStatusChanged;
+                App.CrawlerService.ProgressChanged -= OnProgressChanged;
+                App.CrawlerService.ScanCompleted -= OnScanCompleted;
+            };
+        }
+        // =========================================================================
+
         private void OnFilterMenuItemClick(
             object? sender,
             RoutedEventArgs e)

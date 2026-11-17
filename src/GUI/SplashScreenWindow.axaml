@@ -5,29 +5,26 @@
         Width="605" Height="210"
         WindowStartupLocation="CenterScreen"
         SystemDecorations="None"
-         Icon="avares://FileSearcherApp/GUIAssets/icon.png"
         Background="#0c3835">
     
-    <!-- Logo  -->
+  
     <Grid VerticalAlignment="Center" HorizontalAlignment="Center" RowDefinitions="Auto,Auto,Auto">
+
         <Image Grid.Row="0"        
                Source="avares://FileSearcherApp/GUIAssets/logo.png"          
                Width="605" Height="140" 
                Margin="0,0,0,10"                    
                VerticalAlignment="Top"/>
 
-        <!-- Hinweistext / Statusmeldung -->
         <TextBlock Grid.Row="1" 
                    x:Name="StatusTextBlock" 
-                   Text="Starte PowerShell-Umgebung..." 
+                   Text="Starte Suchmaschine &amp; Hintergrund-Indexierung..." 
                    FontSize="12" 
                    Foreground="#80A09F" 
                    HorizontalAlignment="Center"
                    VerticalAlignment="Bottom"
                    Margin="0,0,0,8"/>
 
-        <!-- Ladebalken -->
-        <!-- <- NEU: ProgressBar mit x:Name="CrawlerProgressBar" im passenden Design hinzugefügt -->
         <ProgressBar Grid.Row="2"
                      x:Name="CrawlerProgressBar"
                      Width="400"
