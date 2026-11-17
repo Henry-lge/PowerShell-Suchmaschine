@@ -1,5 +1,7 @@
 
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Collections.Generic;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -11,6 +13,10 @@ namespace FileSearcherApp
 {
     public partial class MainWindow : Window
     {
+        private const int DebounceMs = 500;   // Pause nach der letzten Eingabe
+        private const int MinChars = 2;       // kürzere Eingaben suchen wir nicht automatisch
+        private CancellationTokenSource? _cts;   // gehört zur jeweils neuesten Eingabe
+    
         private ISearchService? _search;
         private bool _isSearching;
         private bool _windowLoaded;
@@ -28,10 +34,64 @@ namespace FileSearcherApp
             // Erst nach dem Laden auf Ereignisse reagieren.
             _windowLoaded = true;
 
-            SearchBox.KeyDown += OnSearchKeyDown;
+            //SearchBox.KeyDown += OnSearchKeyDown;
+            SearchBox.TextChanged += OnSearchTextChanged;
 
             UpdateSearchWatermark();
         }
+
+         // Live-Suche: nach jeder Eingabe warten, dann suchen
+        private void OnSearchTextChanged(object? sender, TextChangedEventArgs e)
+            => _ = RunSearchAsync(DebounceMs);
+
+        // Button: sofort suchen, ohne Wartezeit
+        private void OnSearchClicked(object? sender, RoutedEventArgs e)
+            => _ = RunSearchAsync(0);
+
+        private async Task RunSearchAsync(int delayMs)
+        {
+            // Wartende oder laufende Suche der vorherigen Eingabe abbrechen
+            _cts?.Cancel();
+            var cts = _cts = new CancellationTokenSource();
+            var ct = cts.Token;
+
+            var text = SearchBox.Text?.Trim() ?? "";
+            if (text.Length == 0)
+            {
+                ResultsList.Items.Clear();
+                SetCount(0); 
+                return;
+            }
+            // Automatisch erst ab MinChars Zeichen; der Button sucht immer
+            if (delayMs > 0 && text.Length < MinChars) return;
+
+            try
+            {
+                if (delayMs > 0) await Task.Delay(delayMs, ct);
+
+                _search ??= SearchBridge.CreateDefault();
+                var hits = await _search.SearchAsync(text, ct: ct);
+
+                // Falls inzwischen eine neuere Eingabe da ist, Ergebnis verwerfen
+                ct.ThrowIfCancellationRequested();
+
+                ResultsList.Items.Clear();
+                SetCount(hits.Count);
+                if (hits.Count == 0) { ResultsList.Items.Add("Keine Treffer."); return; }
+                foreach (var hit in hits) ResultsList.Items.Add(hit);
+            }
+            catch (OperationCanceledException)
+            {
+                // normal: neuere Eingabe hat diese Suche abgelöst
+            }
+            catch (Exception ex)
+            {
+                if (ct.IsCancellationRequested) return;
+                ResultsList.Items.Clear();
+                SetCount(0);    
+                ResultsList.Items.Add($"Fehler: {ex.Message}");
+            }
+        }    
 
      
         private void OnFilterMenuItemClick(
@@ -60,6 +120,16 @@ namespace FileSearcherApp
             };
         }
 
+        private const int SearchLimit = 100;   // Limit von SearchAsync
+        private void SetCount(int count)
+        {
+            // Wenn das Limit erreicht ist, kann es mehr Treffer geben, als angezeigt werden.
+            ResultsCountText.Text = count >= SearchLimit
+                ? $"Dateien gefunden: {count}+"
+                : $"Dateien gefunden: {count}";
+        }
+
+
         private void OnSearchKeyDown(object? sender, KeyEventArgs e)
         {
             if (e.Key == Key.Enter)
@@ -69,10 +139,6 @@ namespace FileSearcherApp
             }
         }
 
-        private void OnSearchClicked(object? sender, RoutedEventArgs e)
-        {
-            PerformSearch();
-        }
 
         private void OnSortMenuItemClick(
             object? sender,
