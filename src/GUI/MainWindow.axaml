@@ -10,6 +10,17 @@
         Icon="avares://FileSearcherApp/GUIAssets/logo.png"
         Background="#0c3835">
 
+        <Window.Styles>
+            <Style Selector="ToolTip">
+                <Setter Property="Background" Value="#001816"/>
+                <Setter Property="Foreground" Value="#C9DDDC"/>
+                <Setter Property="BorderBrush" Value="#3F6B68"/>
+                <Setter Property="BorderThickness" Value="1"/>
+                <Setter Property="CornerRadius" Value="8"/>
+                <Setter Property="Padding" Value="12"/>
+            </Style>
+        </Window.Styles>
+
     <Grid Margin="20" RowDefinitions="Auto,Auto,Auto,Auto,*">
 
         <!-- Überschrift & Zähler -->
@@ -140,13 +151,24 @@
                         <ToolTip.Tip>
                             <StackPanel Spacing="6" MaxWidth="480">
                                 <TextBlock Text="{Binding FileName}" FontWeight="Bold"/>
+                                <Separator/>
+
+                                <!--Vorschaubild (nur bei Bilddateien sichtbar) -->
+                                 <Image Source="{Binding Path, Converter={x:Static local:ThumbnailConverter.Instance}}"
+                                IsVisible="{Binding $self.Source, Converter={x:Static ObjectConverters.IsNotNull}}"
+                                MaxWidth="320"
+                                MaxHeight="200"
+                                Stretch="Uniform"
+                                HorizontalAlignment="Left"/>
+                            
+                                <TextBlock Inlines="{Binding Preview, Converter={x:Static local:HighlightConverter.Instance}}"
+                                IsVisible="{Binding Path, Converter={x:Static local:FileTypeConverters.IsNotImage}}"
+                                TextWrapping="Wrap"
+                                MaxHeight="220"
+                                TextTrimming="CharacterEllipsis"/>
+                                <Separator/>
                                 <TextBlock Text="{Binding Path}" Opacity="0.7" TextWrapping="Wrap" FontSize="11"/>
                                 <TextBlock Text="{Binding LastWriteText}" Opacity="0.7" FontSize="11"/>
-                                <Separator/>
-                                <TextBlock Inlines="{Binding Preview, Converter={x:Static local:HighlightConverter.Instance}}"
-                                           TextWrapping="Wrap"
-                                           MaxHeight="220"
-                                           TextTrimming="CharacterEllipsis"/>
                             </StackPanel>
                         </ToolTip.Tip>
                         <Grid ColumnDefinitions="2*,60,130,3*" ColumnSpacing="12">
