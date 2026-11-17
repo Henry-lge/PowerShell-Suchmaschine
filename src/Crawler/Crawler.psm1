@@ -26,10 +26,21 @@ $script:DefaultExcludedFolderNames = @(
     ".idea", ".vs"
 )
 
-# Ein Kern bleibt für den Hauptthread (Ordner, Datenbank) frei. Mehr als 4
-# Worker brachten in Messungen nichts mehr: PowerShell-Code muss in jedem
-# Worker neu "warmlaufen", und viele CPUs haben nur wenige schnelle Kerne.
-$script:DefaultMaxParallelism = [Math]::Max(1, [Math]::Min(4, [Environment]::ProcessorCount - 1))
+# Ordner mit diesen Endungen sind unter macOS Pakete (Programme, Frameworks,
+# Plug-ins). Der Finder zeigt sie als eine Datei; ihr Inhalt sind
+# Programmdateien und Icons, keine Dokumente. In einem Benutzerordner machten
+# allein vier Entwickler-Apps über die Hälfte der zu lesenden Dateien aus.
+$script:DefaultExcludedFolderExtensions = @(
+    ".app", ".appex", ".framework", ".bundle",
+    ".plugin", ".kext", ".xpc", ".prefPane"
+)
+
+# Ein Kern bleibt für den Hauptthread (Ordner, Datenbank) frei. Höchstens 8:
+# Bei Ordnern mit vielen Bildern warten die Worker meist auf die
+# Texterkennung, die außerhalb von PowerShell läuft; 8 statt 4 Worker waren
+# dort etwa 25-30 % schneller. Bei reinen Dokumenten änderte sich kaum
+# etwas, und mehr als 8 brachten in keinem Fall noch etwas.
+$script:DefaultMaxParallelism = [Math]::Max(1, [Math]::Min(8, [Environment]::ProcessorCount - 1))
 
 # Standard-Datenbank: data/index.sqlite3 im Projektordner, unabhängig davon,
 # aus welchem Ordner das Skript gestartet wird.
@@ -168,6 +179,177 @@ if ($null -ne $global:CrawlerWriterRepository) {
 '@
 
 
+# Skript der Hintergrundverarbeitung. Es liest Dateien, deren Reader im
+# Hintergrund laufen soll (z. B. Videos, ContentReader.RunsInBackground),
+# nachdem der eigentliche Scan fertig ist, und speichert jede sofort.
+#
+# Wie der Schreib-Thread holt es sich eine eigene Verbindung aus dem Pool
+# und baut daraus sein Repository; DocScanner und Repository werden nur beim
+# ersten Mal erzeugt und für spätere Scans in globalen Variablen gemerkt.
+#
+# Kann der Inhalt nicht gelesen werden, wird die Datei trotzdem mit ihrer
+# echten Änderungszeit gespeichert (ohne Inhalt) und erst nach einer
+# Änderung erneut versucht, wie im normalen Scan. Scheitert das Speichern,
+# bleibt der Platzhalter aus dem Scan stehen und der nächste Scan versucht
+# es erneut.
+$script:BackgroundScript = @'
+param(
+    [string]$DocScannerModulePath,
+    [string]$SqliteModulePath,
+    $Pool,
+    [int]$BorrowTimeoutMilliseconds,
+    $Queue,
+    $Results,
+    $Paths,
+    [long]$EnrichedModulus,
+    [long]$EnrichedMarker
+)
+
+$startError = $null
+
+if ($null -eq $global:CrawlerBackgroundRepository) {
+    $lease = $null
+
+    try {
+        # Erst sammeln, dann auswählen (siehe Worker-Skript).
+        $scannerModules = @(Import-Module -Name $DocScannerModulePath -PassThru -ErrorAction Stop)
+        $scannerModule = @($scannerModules | Where-Object Name -eq "DocScanner")[0]
+        $global:CrawlerBackgroundDocScanner = & $scannerModule { [DocScanner]::new() }
+
+        $sqliteModules = @(Import-Module -Name $SqliteModulePath -PassThru -ErrorAction Stop)
+        $sqliteModule = @($sqliteModules | Where-Object Name -eq "SqliteDateiRepository")[0]
+        $lease = $Pool.Borrow($BorrowTimeoutMilliseconds)
+        $global:CrawlerBackgroundRepository = & $sqliteModule { param($l) [SqliteDateiRepository]::new($l) } $lease
+    }
+    catch {
+        $startError = $_.Exception.Message
+
+        if ($null -ne $lease) {
+            $lease.Dispose()
+        }
+    }
+}
+
+$scanner = $global:CrawlerBackgroundDocScanner
+$repository = $global:CrawlerBackgroundRepository
+$removed = [byte]0
+$carry = $null
+
+# Jeder Eintrag ist entweder eine Datei, die erst hier gelesen wird (z. B.
+# ein Video), oder eine bereits gelesene, die nur ergänzt wird (Enrich, z. B.
+# Objekte auf einem Foto). Ergänzungen werden bis zu 20 auf einmal
+# verarbeitet, damit Reader ein Tool nur einmal pro Paket starten.
+while ($true) {
+    $item = $carry
+    $carry = $null
+
+    if ($null -eq $item -and -not $Queue.TryTake([ref]$item, -1)) {
+        break
+    }
+
+    $items = [System.Collections.Generic.List[object]]::new()
+    $items.Add($item)
+
+    if ($item.Enrich) {
+        $next = $null
+
+        while ($items.Count -lt 20 -and $Queue.TryTake([ref]$next, 0)) {
+            if ($next.Enrich) {
+                $items.Add($next)
+            }
+            else {
+                $carry = $next
+                break
+            }
+        }
+    }
+
+    $message = $startError
+
+    if ($null -ne $repository) {
+        $message = $null
+
+        if ($item.Enrich) {
+            $files = [System.IO.FileInfo[]]::new($items.Count)
+
+            for ($i = 0; $i -lt $items.Count; $i++) {
+                $files[$i] = [System.IO.FileInfo]::new($items[$i].Datei.Path)
+            }
+
+            try {
+                $texts = $scanner.Enrich($files)
+            }
+            catch {
+                # Die Dateien behalten ihren gelesenen Inhalt.
+                $message = $_.Exception.Message
+                $texts = [string[]]::new($items.Count)
+            }
+
+            for ($i = 0; $i -lt $items.Count; $i++) {
+                if (-not [string]::IsNullOrWhiteSpace($texts[$i])) {
+                    $datei = $items[$i].Datei
+                    $datei.Content = ("$($datei.Content)`n`n$($texts[$i])").Trim()
+                    $datei.HasContent = $true
+                }
+            }
+        }
+        else {
+            $datei = $item.Datei
+
+            try {
+                $datei.Content = $scanner.ReadContent([System.IO.FileInfo]::new($datei.Path))
+                $datei.HasContent = $true
+            }
+            catch {
+                $message = $_.Exception.Message
+                $datei.Content = $null
+                $datei.HasContent = $false
+            }
+        }
+
+        $batch = [object[]]::new($items.Count)
+
+        # Ergänzte Dateien bekommen die Markierung in IndexedAtUtc (siehe
+        # Crawler.MarkEnriched), auch wenn nichts erkannt wurde, damit sie
+        # nicht bei jedem Scan erneut verarbeitet werden.
+        $now = [datetime]::UtcNow.Ticks
+        $marked = [datetime]::new($now - ($now % $EnrichedModulus) + $EnrichedMarker, [System.DateTimeKind]::Utc)
+
+        for ($i = 0; $i -lt $items.Count; $i++) {
+            $items[$i].Datei.IndexedAtUtc = if ($items[$i].Enrich) { $marked } else { [datetime]::UtcNow }
+            $batch[$i] = $items[$i].Datei
+        }
+
+        try {
+            $repository.SaveBatch($batch)
+        }
+        catch {
+            $message = "Saving failed: " + $_.Exception.Message
+        }
+    }
+
+    # Ein Fehler beim Ergänzen betrifft meist das ganze Paket (z. B. fehlende
+    # Objekterkennung) und wird nur einmal gemeldet.
+    for ($i = 0; $i -lt $items.Count; $i++) {
+        $path = $items[$i].Datei.Path
+        [void]$Paths.TryRemove($path, [ref]$removed)
+        $Results.Enqueue([pscustomobject]@{
+            Path  = $path
+            Error = if ($i -eq 0) { $message } else { $null }
+        })
+    }
+}
+'@
+
+# Gibt die Verbindung der Hintergrundverarbeitung an den Pool zurück.
+$script:BackgroundCleanupScript = @'
+if ($null -ne $global:CrawlerBackgroundRepository) {
+    $global:CrawlerBackgroundRepository.Dispose()
+    $global:CrawlerBackgroundRepository = $null
+}
+'@
+
+
 # Eine Datei, deren Inhalt noch gelesen werden muss. $Stored ist der Stand
 # aus dem Repository ($null bei neuen Dateien) und entscheidet später, ob die
 # Datei als New oder Changed gilt.
@@ -255,6 +437,11 @@ class Crawler {
     # der Groß-/Kleinschreibung).
     [string[]]$ExcludedFolderNames = $script:DefaultExcludedFolderNames
 
+    # Ordner mit diesen Endungen werden samt Inhalt übersprungen (ohne
+    # Beachtung der Groß-/Kleinschreibung), standardmäßig macOS-Pakete wie
+    # ".app". Leeres Array: alle Ordner durchsuchen.
+    [string[]]$ExcludedFolderExtensions = $script:DefaultExcludedFolderExtensions
+
     # Absolute Ordnerpfade, die samt Unterordnern übersprungen werden.
     [string[]]$ExcludedPaths = @()
 
@@ -281,6 +468,14 @@ class Crawler {
     # ein Scan ohne Änderungen kostet ihn also nichts.
     [bool]$UseWriterThread = $true
 
+    # Dateien, deren Reader im Hintergrund laufen soll (z. B. Videos),
+    # werden beim Scan zuerst ohne Inhalt gespeichert und nach dem Scan im
+    # Hintergrund gelesen. So ist der übrige Index fertig, ohne auf sie zu
+    # warten. Nur mit der SQLite-Datenbank aus DatabasePool; sonst werden sie
+    # wie alle anderen Dateien im Scan gelesen. Fortschritt und Abschluss:
+    # GetBackgroundPending() und WaitForBackground().
+    [bool]$BackgroundProcessing = $true
+
     # So lange wird auf eine freie Verbindung im Pool gewartet. Ist sie dann
     # nicht frei (z. B. weil ein zugewiesener Pool ausgelastet ist), speichert
     # der Hauptthread selbst bzw. der Scan meldet den Fehler.
@@ -293,6 +488,9 @@ class Crawler {
 
     # Anzahl der Dateien, die ein Worker auf einmal bekommt. Größere Pakete
     # sparen Verwaltungsaufwand, kleinere verteilen die Arbeit gleichmäßiger.
+    # Kleiner als 20 lohnt sich nicht: Die Texterkennung erkennt alle Bilder
+    # eines Pakets in einem Aufruf (DocScanner.Prepare); bei kleineren
+    # Paketen startet sie öfter und wird langsamer.
     [int]$ParallelBatchSize = 20
 
 
@@ -333,6 +531,15 @@ class Crawler {
     # enthalten.
     [int]$CloudOnlyFiles = 0
 
+    # Dateien, die dieser Scan zur Hintergrundverarbeitung gegeben hat:
+    # Videos, die erst dort gelesen werden (zunächst ohne Inhalt gespeichert),
+    # und Fotos, deren Objekte dort ergänzt werden (zunächst mit dem übrigen
+    # Inhalt gespeichert). Sie sind in NewFiles bzw. ChangedFiles enthalten. Fertig bzw. gescheitert zählen die beiden anderen Zähler,
+    # sobald WaitForBackground() oder der nächste Scan die Ergebnisse abholt.
+    [int]$BackgroundFiles = 0
+    [int]$BackgroundCompleted = 0
+    [int]$BackgroundFailed = 0
+
     # Nur gefüllt, wenn CollectFiles aktiviert ist.
     [System.Collections.Generic.List[Datei]]$Files = (
         [System.Collections.Generic.List[Datei]]::new()
@@ -349,6 +556,7 @@ class Crawler {
 
     hidden [System.IO.EnumerationOptions]$_enumerationOptions
     hidden [System.Collections.Generic.HashSet[string]]$_excludedNames
+    hidden [System.Collections.Generic.HashSet[string]]$_excludedExtensions
     hidden [string[]]$_excludedPaths
 
     # Pfade, die im aktuellen Scan auf der Festplatte gefunden wurden.
@@ -401,6 +609,21 @@ class Crawler {
     # Paket gestartet werden darf.
     hidden [bool]$_writerWanted = $false
 
+    # True, solange ScanFolder läuft. Nur dann gehen Dateien in den
+    # Hintergrund; ProcessFile() liest sie sofort.
+    hidden [bool]$_inScanFolder = $false
+
+    # Hintergrundverarbeitung: Dateien dieses Scans, die nach dem Scan
+    # übergeben werden; Warteschlange, Rückmeldungen und Pfade, die gerade
+    # verarbeitet werden. Der Runspace bleibt über Scans erhalten.
+    hidden [System.Collections.Generic.List[object]]$_backgroundForScan
+    hidden [System.Collections.Concurrent.BlockingCollection[object]]$_backgroundQueue
+    hidden [System.Collections.Concurrent.ConcurrentQueue[object]]$_backgroundResults
+    hidden [System.Collections.Concurrent.ConcurrentDictionary[string, byte]]$_backgroundPaths
+    hidden [System.Management.Automation.Runspaces.Runspace]$_backgroundRunspace
+    hidden [powershell]$_backgroundShell
+    hidden [System.IAsyncResult]$_backgroundHandle
+
 
     # =============================================================================
     # SCAN-VORBEREITUNG
@@ -427,6 +650,13 @@ class Crawler {
             )
         )
 
+        $this._excludedExtensions = (
+            [System.Collections.Generic.HashSet[string]]::new(
+                [string[]]@($this.ExcludedFolderExtensions | Where-Object { $_ }),
+                [System.StringComparer]::OrdinalIgnoreCase
+            )
+        )
+
         $this._excludedPaths = @(
             $this.ExcludedPaths |
                 Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
@@ -439,6 +669,11 @@ class Crawler {
         $this._failedFolders = [System.Collections.Generic.List[string]]::new()
         $this._pendingSaves = [System.Collections.Generic.List[Datei]]::new()
         $this._pendingReads = [System.Collections.Generic.List[PendingRead]]::new()
+        $this._backgroundForScan = [System.Collections.Generic.List[object]]::new()
+
+        # Ergebnisse eines früheren Scans abholen, damit Zähler und Fehler
+        # stimmen.
+        $this._CollectBackgroundResults()
 
         $this._EnsureRepository()
 
@@ -470,6 +705,7 @@ class Crawler {
 
         # Der Schreib-Thread startet erst beim ersten Paket (_FlushSaves).
         $this._writerWanted = $true
+        $this._inScanFolder = $true
 
         try {
             # Phase 1: auswählen. Phase 2: Inhalte lesen. Gespeichert wird
@@ -481,6 +717,7 @@ class Crawler {
         finally {
             # Wartet, bis alle Pakete gespeichert sind, auch nach einem Fehler.
             $this._writerWanted = $false
+            $this._inScanFolder = $false
             $this._StopWriter()
         }
 
@@ -489,6 +726,10 @@ class Crawler {
         if ($this.DetectDeletedFiles) {
             $this._RemoveDeletedFiles($rootPath)
         }
+
+        # Erst jetzt, damit die Hintergrundverarbeitung dem Scan keine
+        # Rechenzeit wegnimmt. Die Platzhalter sind bereits gespeichert.
+        $this._StartBackground()
     }
 
 
@@ -499,6 +740,7 @@ class Crawler {
         $this._writerWanted = $false
         $this._StopWriter()
         $this._DisposeWriterRunspace()
+        $this._StopBackground()
         $this._DisposeWorkerPool()
 
         if ($this._ownsRepository -and $null -ne $this.Repository) {
@@ -526,8 +768,9 @@ class Crawler {
         }
 
         if ($null -eq $this.DatabasePool) {
-            # Eine Verbindung für den Hauptthread, eine für den Schreib-Thread.
-            $this.DatabasePool = Initialize-DatabasePool -DatabasePath $this.DatabasePath -PoolSize 2
+            # Je eine Verbindung für Hauptthread, Schreib-Thread und
+            # Hintergrundverarbeitung.
+            $this.DatabasePool = Initialize-DatabasePool -DatabasePath $this.DatabasePath -PoolSize 3
             $this._ownsPool = $true
         }
 
@@ -643,6 +886,13 @@ class Crawler {
             return $null
         }
 
+        if (
+            $this._excludedExtensions.Count -gt 0 -and
+            $this._excludedExtensions.Contains($folder.Extension)
+        ) {
+            return $null
+        }
+
         foreach ($excludedPath in $this._excludedPaths) {
             if ([PathUtil]::IsSameOrUnder($folder.FullName, $excludedPath)) {
                 return $null
@@ -705,6 +955,15 @@ class Crawler {
             # Zugriff auf die Festplatte.
             $datei = [Datei]::FromFileInfo($file)
 
+            # Wird von einem früheren Scan noch im Hintergrund gelesen: nicht
+            # erneut einreihen.
+            if ($null -ne $this._backgroundPaths -and $this._backgroundPaths.ContainsKey($filePath)) {
+                $datei.Status = [DateiStatus]::Unchanged
+                $this.UnchangedFiles++
+                $this._Collect($datei)
+                return $datei
+            }
+
             $phase = [ScanPhase]::Repository
             $stored = $this.Repository.Get($filePath)
 
@@ -727,6 +986,21 @@ class Crawler {
                 $isUnchanged = $false
             }
 
+            # Ausnahme: Ein Foto, dessen Objekte noch nie erkannt wurden (z. B.
+            # aus einem Index von vor der Objekterkennung), wird einmal neu
+            # gelesen und dann im Hintergrund ergänzt. Sonst bliebe es für
+            # immer ohne Objekte, weil sich seine Änderungszeit nicht ändert.
+            if (
+                $isUnchanged -and
+                $this.ReadContents -and
+                -not $stored.IsCloudOnly -and
+                -not [Crawler]::IsEnriched($stored) -and
+                $this._CanUseBackground() -and
+                $this.DocScanner.CanEnrich($file)
+            ) {
+                $isUnchanged = $false
+            }
+
             if ($isUnchanged) {
                 $this._MarkUnchanged($datei, $stored)
                 return $datei
@@ -742,6 +1016,11 @@ class Crawler {
                 $datei.IsCloudOnly = $true
                 $this.CloudOnlyFiles++
                 $shouldRead = $false
+            }
+
+            if ($shouldRead -and $this._ShouldUseBackground($file)) {
+                $this._QueueBackground($datei, $stored)
+                return $datei
             }
 
             # Gelesen wird erst in Phase 2 (_ReadPendingContents), damit
@@ -807,7 +1086,7 @@ class Crawler {
             return
         }
 
-        $items = $this._pendingReads.ToArray()
+        $items = [Crawler]::GroupByExtension($this._pendingReads)
         $this._pendingReads.Clear()
 
         $useWorkers = (
@@ -822,6 +1101,38 @@ class Crawler {
         else {
             $this._ReadSequential($items, 0, $items.Length)
         }
+    }
+
+
+    # Ordnet die Dateien nach Endung, sonst in der gefundenen Reihenfolge.
+    # So bestehen die Pakete der Worker möglichst aus gleichartigen Dateien:
+    # Die Texterkennung erkennt alle Bilder eines Pakets in einem Aufruf
+    # (DocScanner.Prepare). Liegen die Bilder verstreut zwischen anderen
+    # Dateien, stehen in jedem Paket nur ein oder zwei und die Erkennung
+    # startet fast für jedes Bild neu.
+    hidden static [PendingRead[]] GroupByExtension([System.Collections.Generic.List[PendingRead]]$pending) {
+        $groups = [System.Collections.Generic.Dictionary[string, System.Collections.Generic.List[PendingRead]]]::new(
+            [System.StringComparer]::OrdinalIgnoreCase
+        )
+
+        foreach ($item in $pending) {
+            $list = $null
+
+            if (-not $groups.TryGetValue($item.File.Extension, [ref]$list)) {
+                $list = [System.Collections.Generic.List[PendingRead]]::new()
+                $groups[$item.File.Extension] = $list
+            }
+
+            $list.Add($item)
+        }
+
+        $ordered = [System.Collections.Generic.List[PendingRead]]::new($pending.Count)
+
+        foreach ($list in $groups.Values) {
+            $ordered.AddRange($list)
+        }
+
+        return $ordered.ToArray()
     }
 
 
@@ -981,10 +1292,18 @@ class Crawler {
 
 
     # Übernimmt den gelesenen Text einer vorgemerkten Datei.
+    # Reader, die im Hintergrund noch etwas ergänzen (z. B. Objekte auf
+    # Fotos), bekommen die Datei danach über _QueueEnrichment.
     hidden [void] _CompleteRead([PendingRead]$item, [string]$text) {
         $item.Datei.Content = $text
         $item.Datei.HasContent = $true
         $this.ContentFilesRead++
+
+        if ($this._CanUseBackground() -and $this.DocScanner.CanEnrich($item.File)) {
+            $this._QueueEnrichment($item.Datei, $item.Stored)
+            return
+        }
+
         $this._FinishNewOrChanged($item.Datei, $item.Stored)
     }
 
@@ -1014,7 +1333,10 @@ class Crawler {
         $datei.Content = $null
         $datei.HasContent = $false
         $datei.ContentError = $message
-        $datei.IndexedAtUtc = [datetime]::UtcNow
+
+        # Markiert wie ergänzt: Ein nicht lesbares Foto soll nicht bei jedem
+        # Scan für die Objekterkennung neu gelesen werden.
+        $datei.IndexedAtUtc = [Crawler]::MarkEnriched([datetime]::UtcNow)
 
         if ($null -eq $stored) {
             $datei.Status = [DateiStatus]::New
@@ -1244,6 +1566,282 @@ class Crawler {
 
 
     # =============================================================================
+    # HINTERGRUNDVERARBEITUNG
+    # =============================================================================
+
+    # Anzahl der Dateien, die noch im Hintergrund gelesen werden.
+    [int] GetBackgroundPending() {
+        if ($null -eq $this._backgroundPaths) {
+            return 0
+        }
+
+        return $this._backgroundPaths.Count
+    }
+
+
+    # Wartet höchstens $timeoutMilliseconds (negativ: unbegrenzt), bis die
+    # Hintergrundverarbeitung fertig ist, und übernimmt ihre Ergebnisse in
+    # Zähler und Fehlerliste. Gibt $true zurück, wenn nichts mehr offen ist.
+    [bool] WaitForBackground([int]$timeoutMilliseconds) {
+        $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+        while ($true) {
+            $this._CollectBackgroundResults()
+
+            if ($this.GetBackgroundPending() -eq 0) {
+                return $true
+            }
+
+            # Ist der Thread selbst abgebrochen, wird nichts mehr fertig.
+            # Die Platzhalter bleiben gespeichert, der nächste Scan versucht
+            # es erneut.
+            if ($null -eq $this._backgroundHandle -or $this._backgroundHandle.IsCompleted) {
+                $this._RestartBackgroundAfterFailure()
+                return $true
+            }
+
+            if ($timeoutMilliseconds -ge 0 -and $stopwatch.ElapsedMilliseconds -ge $timeoutMilliseconds) {
+                return $false
+            }
+
+            [System.Threading.Thread]::Sleep(100)
+        }
+
+        return $true
+    }
+
+
+    # Ob eine Datei schon im Hintergrund ergänzt wurde (z. B. Objekte auf
+    # einem Foto), steht ohne eigenes Datenbankfeld im Zeitstempel
+    # IndexedAtUtc: Nach dem Ergänzen enden seine Ticks (100 ns) innerhalb
+    # von 10 ms auf den festen Wert EnrichedMarker. Die Abweichung vom
+    # echten Zeitpunkt liegt unter 10 ms und ist nirgends sichtbar. Dass ein
+    # normaler Zeitstempel zufällig so endet, ist 1 zu 100.000.
+    hidden static [long]$EnrichedModulus = 100000
+    hidden static [long]$EnrichedMarker = 4711
+
+    static [datetime] MarkEnriched([datetime]$time) {
+        $ticks = $time.Ticks - ($time.Ticks % [Crawler]::EnrichedModulus) + [Crawler]::EnrichedMarker
+        return [datetime]::new($ticks, [System.DateTimeKind]::Utc)
+    }
+
+    static [bool] IsEnriched([Datei]$stored) {
+        return (
+            $null -ne $stored -and
+            $stored.IndexedAtUtc.Ticks % [Crawler]::EnrichedModulus -eq [Crawler]::EnrichedMarker
+        )
+    }
+
+
+    # Hintergrundverarbeitung ist möglich: nur während ScanFolder, mit der
+    # Datenbank aus dem Pool und ohne zur Laufzeit registrierte Reader (die
+    # kennt der Hintergrund-Thread nicht).
+    hidden [bool] _CanUseBackground() {
+        return (
+            $this._inScanFolder -and
+            $this.BackgroundProcessing -and
+            $this._ownsRepository -and
+            $null -ne $this.DatabasePool -and
+            -not $this.DocScanner.HasCustomReaders()
+        )
+    }
+
+
+    hidden [bool] _ShouldUseBackground([System.IO.FileInfo]$file) {
+        return $this._CanUseBackground() -and $this.DocScanner.RunsInBackground($file)
+    }
+
+
+    # Wie _QueueBackground, aber für eine bereits gelesene Datei, die im
+    # Hintergrund nur ergänzt wird (ContentReader.CanEnrich). Der
+    # Platzhalter enthält den gelesenen Inhalt, ist also sofort durchsuchbar.
+    hidden [void] _QueueEnrichment([Datei]$datei, [Datei]$stored) {
+        $placeholder = $datei.CopyWithoutContent()
+        $placeholder.Content = $datei.Content
+        $placeholder.HasContent = $datei.HasContent
+        $placeholder.LastWriteTimeUtc = $datei.LastWriteTimeUtc.AddTicks(-1)
+
+        $this._FinishNewOrChanged($placeholder, $stored)
+        $datei.Status = $placeholder.Status
+
+        $this.BackgroundFiles++
+        $this._backgroundForScan.Add([pscustomobject]@{ Datei = $datei; Enrich = $true })
+    }
+
+
+    # Speichert sofort einen Platzhalter ohne Inhalt und merkt die Datei für
+    # die Hintergrundverarbeitung vor. Der Platzhalter trägt eine um einen
+    # Tick (100 ns) frühere Änderungszeit: Endet das Programm, bevor die
+    # Datei im Hintergrund fertig ist, gilt sie beim nächsten Scan als
+    # geändert und wird erneut eingereiht. Ist sie fertig, speichert der
+    # Hintergrund die echte Zeit. So geht nichts verloren, ohne dass die
+    # Datenbank ein eigenes Feld dafür braucht.
+    hidden [void] _QueueBackground([Datei]$datei, [Datei]$stored) {
+        $placeholder = $datei.CopyWithoutContent()
+        $placeholder.LastWriteTimeUtc = $datei.LastWriteTimeUtc.AddTicks(-1)
+        $placeholder.HasContent = $false
+
+        $this._FinishNewOrChanged($placeholder, $stored)
+        $datei.Status = $placeholder.Status
+
+        $this.BackgroundFiles++
+        $this._backgroundForScan.Add([pscustomobject]@{ Datei = $datei; Enrich = $false })
+    }
+
+
+    # Übergibt die Dateien des Scans an den Hintergrund und startet ihn beim
+    # ersten Mal.
+    hidden [void] _StartBackground() {
+        if ($null -eq $this._backgroundForScan -or $this._backgroundForScan.Count -eq 0) {
+            return
+        }
+
+        if ($null -ne $this._backgroundHandle -and $this._backgroundHandle.IsCompleted) {
+            $this._RestartBackgroundAfterFailure()
+        }
+
+        if ($null -eq $this._backgroundPaths) {
+            $this._backgroundPaths = [System.Collections.Concurrent.ConcurrentDictionary[string, byte]]::new(
+                [PathUtil]::GetComparer()
+            )
+        }
+
+        if ($null -eq $this._backgroundShell) {
+            $this._backgroundQueue = [System.Collections.Concurrent.BlockingCollection[object]]::new()
+            $this._backgroundResults = [System.Collections.Concurrent.ConcurrentQueue[object]]::new()
+
+            if ($null -eq $this._backgroundRunspace) {
+                $this._backgroundRunspace = [runspacefactory]::CreateRunspace()
+                $this._backgroundRunspace.Open()
+            }
+
+            $shell = [powershell]::Create()
+            $shell.Runspace = $this._backgroundRunspace
+            [void]$shell.AddScript($script:BackgroundScript)
+            [void]$shell.AddParameter("DocScannerModulePath", $script:DocScannerModulePath)
+            [void]$shell.AddParameter("SqliteModulePath", $script:SqliteModulePath)
+            [void]$shell.AddParameter("Pool", $this.DatabasePool)
+            [void]$shell.AddParameter("BorrowTimeoutMilliseconds", $this.PoolTimeoutMilliseconds)
+            [void]$shell.AddParameter("Queue", $this._backgroundQueue)
+            [void]$shell.AddParameter("Results", $this._backgroundResults)
+            [void]$shell.AddParameter("Paths", $this._backgroundPaths)
+            [void]$shell.AddParameter("EnrichedModulus", [Crawler]::EnrichedModulus)
+            [void]$shell.AddParameter("EnrichedMarker", [Crawler]::EnrichedMarker)
+
+            $this._backgroundShell = $shell
+            $this._backgroundHandle = $shell.BeginInvoke()
+        }
+
+        foreach ($item in $this._backgroundForScan) {
+            $this._backgroundPaths[$item.Datei.Path] = 0
+            $this._backgroundQueue.Add($item)
+        }
+
+        $this._backgroundForScan.Clear()
+    }
+
+
+    # Übernimmt die Rückmeldungen der Hintergrundverarbeitung im Hauptthread.
+    hidden [void] _CollectBackgroundResults() {
+        if ($null -eq $this._backgroundResults) {
+            return
+        }
+
+        $result = $null
+
+        while ($this._backgroundResults.TryDequeue([ref]$result)) {
+            if ([string]::IsNullOrEmpty($result.Error)) {
+                $this.BackgroundCompleted++
+            }
+            else {
+                $this.BackgroundFailed++
+                $this._AddError($result.Path, [ScanPhase]::Content, $result.Error)
+            }
+        }
+    }
+
+
+    # Der Hintergrund-Thread ist unerwartet beendet: Fehler melden, offene
+    # Pfade vergessen (ihre Platzhalter bleiben gespeichert) und beim
+    # nächsten Mal neu starten.
+    hidden [void] _RestartBackgroundAfterFailure() {
+        if ($null -eq $this._backgroundShell) {
+            return
+        }
+
+        try {
+            [void]$this._backgroundShell.EndInvoke($this._backgroundHandle)
+        }
+        catch {
+            $this._AddError("", [ScanPhase]::Content, "Background processing stopped: " + $_.Exception.Message)
+        }
+
+        $this._CollectBackgroundResults()
+        $this._backgroundShell.Dispose()
+        $this._backgroundShell = $null
+        $this._backgroundHandle = $null
+        $this._backgroundQueue = $null
+
+        if ($null -ne $this._backgroundPaths) {
+            $this._backgroundPaths.Clear()
+        }
+    }
+
+
+    # Beendet die Hintergrundverarbeitung. Noch nicht begonnene Dateien
+    # werden aus der Warteschlange genommen (ihre Platzhalter bleiben, der
+    # nächste Scan reiht sie erneut ein); auf die gerade laufende Datei wird
+    # gewartet, damit ihre Verbindung sauber zurückgegeben wird.
+    hidden [void] _StopBackground() {
+        if ($null -ne $this._backgroundShell) {
+            $item = $null
+
+            while ($this._backgroundQueue.TryTake([ref]$item)) {
+                $removed = [byte]0
+                [void]$this._backgroundPaths.TryRemove($item.Datei.Path, [ref]$removed)
+            }
+
+            $this._backgroundQueue.CompleteAdding()
+
+            try {
+                [void]$this._backgroundShell.EndInvoke($this._backgroundHandle)
+            }
+            catch {
+                $this._AddError("", [ScanPhase]::Content, "Background processing stopped: " + $_.Exception.Message)
+            }
+
+            $this._CollectBackgroundResults()
+            $this._backgroundShell.Dispose()
+            $this._backgroundShell = $null
+            $this._backgroundHandle = $null
+            $this._backgroundQueue = $null
+        }
+
+        if ($null -ne $this._backgroundRunspace) {
+            $cleanup = [powershell]::Create()
+
+            try {
+                $cleanup.Runspace = $this._backgroundRunspace
+                [void]$cleanup.AddScript($script:BackgroundCleanupScript)
+                [void]$cleanup.Invoke()
+            }
+            catch {
+                # Die Verbindung schließt spätestens Dispose() des Pools.
+            }
+            finally {
+                $cleanup.Dispose()
+                $this._backgroundRunspace.Dispose()
+                $this._backgroundRunspace = $null
+            }
+        }
+
+        if ($null -ne $this._backgroundPaths) {
+            $this._backgroundPaths.Clear()
+        }
+    }
+
+
+    # =============================================================================
     # ERKENNUNG GELÖSCHTER DATEIEN
     # =============================================================================
 
@@ -1382,6 +1980,9 @@ class Crawler {
             ContentFilesRead    = $this.ContentFilesRead
             ContentFilesSkipped = $this.ContentFilesSkipped
             CloudOnlyFiles      = $this.CloudOnlyFiles
+            BackgroundFiles     = $this.BackgroundFiles
+            BackgroundCompleted = $this.BackgroundCompleted
+            BackgroundFailed    = $this.BackgroundFailed
             Errors              = $this.Errors.Count
         }
     }
@@ -1409,5 +2010,8 @@ class Crawler {
         $this.ContentFilesRead = 0
         $this.ContentFilesSkipped = 0
         $this.CloudOnlyFiles = 0
+        $this.BackgroundFiles = 0
+        $this.BackgroundCompleted = 0
+        $this.BackgroundFailed = 0
     }
 }

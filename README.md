@@ -11,8 +11,7 @@ Eine ausführliche Erklärung der Klassen, Reader und Abläufe steht in der
 ## Voraussetzungen
 
 - PowerShell 7.4 oder neuer
-- Für die GUI Tests: C# Extension C# DevKit von VSCode
-- .Net 10.0  Download: https://dotnet.microsoft.com/en-us/download/dotnet/10.0
+- .Net 10.0 oder neuer Download: https://dotnet.microsoft.com/en-us/download/dotnet/10.0
 - Für SQLite: Internetzugriff beim erstmaligen Einrichten der SQLite-Laufzeit
   (NuGet-Pakete werden heruntergeladen)
 - Für bestimmte Archivformate: `tar` oder 7-Zip, abhängig vom Format und den
@@ -23,8 +22,11 @@ Eine ausführliche Erklärung der Klassen, Reader und Abläufe steht in der
 Im Projektverzeichnis:
 
 ```powershell
-pwsh -File ./suchmaschine.ps1
+pwsh -File ./PowerShell-Suchmaschine.ps1
 ```
+
+Nach Eingabe des Befehls erscheint eine GUI für den Benutzer. Details zu allen Aspekten der
+Gui findet sich in: [GUI.md](./GUI.md)
 
 Standardmäßig wird das Benutzerverzeichnis (`$HOME`) gescannt. Ein anderer
 Startordner und zusätzliche auszuschließende absolute Ordnerpfade lassen sich
@@ -54,6 +56,12 @@ Die Suchabfrage verwendet SQLite FTS5-Syntax und findet vollständige Wörter
 oder Phrasen in Dateinamen, extrahiertem Inhalt oder beidem, keine beliebigen
 Teilzeichenketten. Weitere Beispiele und Details stehen in
 [DATABASE.md](./DATABASE.md).
+
+Die GUI behandelt die Eingabe als normalen Suchtext. Bei Dateinamen findet sie
+auch Teilzeichenfolgen wie `.txt` oder `.`. Inhalte werden weiterhin als
+FTS5-Wortphrase durchsucht, nicht als beliebige Zeichenfolge. Die Suche über
+`suchmaschine.ps1` verwendet dagegen weiterhin FTS5-Syntax. Details stehen in
+[DATABASE.md](./DATABASE.md#volltextsuche).
 
 ## Ablauf eines Scans
 
@@ -110,6 +118,7 @@ werden. Die aktuelle Größenbegrenzung ist über
 
 | Pfad | Aufgabe |
 |---|---|
+| [PowerShellSuchmaschine.ps1](./PowerShell-Suchmaschine.ps1) | Start der Anwendung mit check nach der .Net Version|
 | [suchmaschine.ps1](./suchmaschine.ps1) | Einstiegspunkt für Scan und optionale Suche; verwendet standardmäßig den persistenten SQLite-Index. |
 | [src/Crawler/](./src/Crawler/) | Ordnerdurchlauf, Änderungs- und Lösch-Erkennung, Fehler und Scan-Zusammenfassung. |
 | [src/DocScanner/](./src/DocScanner/) | Auswahl des Readers und Extraktion von Dateiinhalten. |
@@ -118,6 +127,7 @@ werden. Die aktuelle Größenbegrenzung ist über
 | [src/Persistence/](./src/Persistence/) | Repository-Schnittstelle, In-Memory- und SQLite-Implementierung sowie SQLite-Laufzeitinstallation. |
 | [src/Common/](./src/Common/) | Plattformgerechter Pfadvergleich und Erkennung von Cloud-Platzhaltern. |
 | [src/GUI/](./src/GUI/) | Dateien für Benuteroberfläche |
+| [src/GUI/](./src/GUI/GUIAssets) | Bilddateien von der GUI  |
 | [tests/](./tests/) | Pester-Tests für die SQLite-Implementierung. |
 | `lib/sqlite/` | Lokal abgelegte SQLite-.NET- und native Laufzeitdateien; wird bei Bedarf eingerichtet und nicht versioniert. |
 

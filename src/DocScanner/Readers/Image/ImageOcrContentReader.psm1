@@ -1,6 +1,7 @@
 using module "../ContentReader.psm1"
 using module "../Shared/XmlText.psm1"
 using module "./ImageMetadata.psm1"
+using module "./YoloObjectDetector.psm1"
 
 #requires -Version 7.4
 
@@ -9,7 +10,7 @@ using module "./ImageMetadata.psm1"
 # READER FÜR BILDER (METADATEN UND TEXTERKENNUNG)
 # =============================================================================
 
-# Macht Bilder auf zwei Wegen durchsuchbar:
+# Macht Bilder auf drei Wegen durchsuchbar:
 #
 # 1. Metadaten (immer, ohne Tool, siehe ImageMetadata): Titel,
 #    Beschreibung, Stichwörter, Autor, Kamera, Aufnahmedatum, Ort, Personen
@@ -28,11 +29,23 @@ using module "./ImageMetadata.psm1"
 #    Gibt es nichts davon (z. B. Linux ohne Tesseract), werden nur die
 #    Metadaten gelesen.
 #
+# 3. Objekterkennung: was auf dem Foto zu sehen ist, z. B.
+#    "Objects: cat (Katze), sofa (Sofa)". Sie läuft nach dem Scan im
+#    Hintergrund (CanEnrich/Enrich), damit der Index nicht darauf wartet.
+#      - macOS:   eingebaute Bildklassifizierung von Vision
+#                 (VNClassifyImageRequest, über 1.000 Begriffe).
+#      - sonst:   YOLO26n über ONNX Runtime (YoloObjectDetector, 80
+#                 Objektklassen). Die Bibliotheken werden beim ersten
+#                 Gebrauch heruntergeladen; ohne Internet bleibt es bei den
+#                 übrigen Inhalten.
+#    Begriffe, die zu den 80 YOLO-Klassen gehören, bekommen den deutschen
+#    Namen dazu, damit auch die Suche nach "Katze" ein Foto findet.
+#
 # SVG-Grafiken sind XML; ihr Text (<title>, <desc>, <text>) wird direkt
 # gelesen.
 #
 # Ausgabe: zuerst die Metadaten als Zeilen "Bezeichnung: Wert", nach einer
-# Leerzeile der erkannte Text.
+# Leerzeile der erkannte Text, später ergänzt um die Zeile "Objects: ...".
 [NoRunspaceAffinity()]
 class ImageOcrContentReader : ContentReader {
 
@@ -45,6 +58,30 @@ class ImageOcrContentReader : ContentReader {
     [long]$MinOcrBytes = 10KB
 
     [int]$OcrTimeoutSeconds = 60
+
+    # Objekterkennung ein- oder ausschalten.
+    [bool]$DetectObjects = $true
+
+    # "Auto" (macOS: Vision, sonst YOLO), "Vision" oder "Yolo".
+    [string]$ObjectDetector = "Auto"
+
+    # Mindestwahrscheinlichkeit eines Treffers. Vision und YOLO bewerten
+    # unterschiedlich streng, daher getrennt.
+    [double]$MinVisionConfidence = 0.3
+    [double]$MinYoloConfidence = 0.4
+
+    # Kleinere Bilder bekommen keine Objekterkennung. Bewusst viel kleiner
+    # als MinOcrBytes: Auch ein kleines Vorschaubild zeigt erkennbar eine
+    # Katze, und die Erkennung kostet nur Millisekunden.
+    [long]$MinObjectBytes = 1KB
+
+    # Höchstens so viele Begriffe pro Bild (Vision liefert sonst sehr
+    # allgemeine wie "structure" oder "material").
+    [int]$MaxObjectLabels = 8
+
+    # Gescheiterte YOLO-Einrichtung (z. B. kein Internet): nicht bei jedem
+    # Bild erneut versuchen.
+    hidden [bool]$_yoloFailed = $false
 
     # "Vision", "WindowsOcr", "Tesseract" oder leer.
     hidden [string]$_ocrEngine = ""
@@ -96,18 +133,32 @@ class ImageOcrContentReader : ContentReader {
             return $this._ReadSvg($file)
         }
 
-        $metadata = [ImageMetadata]::Read($this.ReadFileBytes($file))
+        $bytes = $this.ReadFileBytes($file)
+        $metadata = [ImageMetadata]::Read($bytes)
         $recognized = ""
 
-        if ($this._ShouldRunOcr($file, $extension)) {
+        # Tesseract (Leptonica) kann keine animierten GIFs lesen und bricht
+        # mit einem Fehler ab; Vision und die Windows-Texterkennung nehmen
+        # einfach das erste Bild.
+        $skipAnimation = (
+            $this._ocrEngine -eq "Tesseract" -and
+            $extension -eq ".gif" -and
+            [ImageMetadata]::IsAnimatedGif($bytes)
+        )
+
+        if (-not $skipAnimation -and $this._ShouldRunOcr($file, $extension)) {
             try {
                 $recognized = $this._RecognizeText($file)
             }
             catch {
+                # Kann die Texterkennung das Format nicht lesen, ist das kein
+                # Fehler der Datei: Sie hat dann eben keinen erkannten Text.
+                $unsupported = [ImageOcrContentReader]::IsUnsupportedImageError($_.Exception.Message)
+
                 # Ohne Metadaten ist der Fehler das einzige Ergebnis und wird
                 # gemeldet. Sonst reichen die Metadaten; ein einzelnes nicht
                 # erkennbares Bild soll den Inhalt nicht verwerfen.
-                if ([string]::IsNullOrEmpty($metadata)) {
+                if (-not $unsupported -and [string]::IsNullOrEmpty($metadata)) {
                     throw
                 }
             }
@@ -334,6 +385,14 @@ class ImageOcrContentReader : ContentReader {
     }
 
 
+    # True für Meldungen, mit denen Tesseract/Leptonica ein Bildformat
+    # ablehnt, das es nicht dekodieren kann (z. B. animierte GIFs, WebP ohne
+    # libwebp). Echte Fehler wie Zeitüberschreitungen gehören nicht dazu.
+    hidden static [bool] IsUnsupportedImageError([string]$message) {
+        return $message -match "pix not read|no pix returned|not supported|Unsupported image|image file format"
+    }
+
+
     # Kürzt jede Zeile und entfernt leere Zeilen.
     hidden static [string] CleanUp([string]$text) {
         if ([string]::IsNullOrWhiteSpace($text)) {
@@ -351,6 +410,139 @@ class ImageOcrContentReader : ContentReader {
         }
 
         return [string]::Join("`n", $lines)
+    }
+
+
+    # =============================================================================
+    # OBJEKTERKENNUNG (IM HINTERGRUND)
+    # =============================================================================
+
+    [bool] CanEnrich([System.IO.FileInfo]$file) {
+        $engine = $this._GetObjectEngine()
+
+        if ([string]::IsNullOrEmpty($engine) -or $file.Length -lt $this.MinObjectBytes) {
+            return $false
+        }
+
+        $extension = $file.Extension.ToLowerInvariant()
+
+        if ($engine -eq "Vision") {
+            return $extension -in $this._visionObjectExtensions
+        }
+
+        return Test-YoloExtension -Extension $extension
+    }
+
+
+    # Gibt pro Bild "Objects: ..." zurück, leer wenn nichts erkannt wurde.
+    [string[]] Enrich([System.IO.FileInfo[]]$files) {
+        $results = [string[]]::new($files.Length)
+        $engine = $this._GetObjectEngine()
+
+        if ($engine -eq "Vision") {
+            $labels = $this._ClassifyWithVision($files)
+
+            for ($i = 0; $i -lt $files.Length -and $i -lt $labels.Length; $i++) {
+                $results[$i] = [ImageOcrContentReader]::FormatObjects($labels[$i])
+            }
+
+            return $results
+        }
+
+        if ($engine -eq "Yolo") {
+            try {
+                Initialize-YoloDetector
+            }
+            catch {
+                # Einmal melden (der Crawler zeigt den Fehler an), danach
+                # ohne Objekterkennung weiter.
+                $this._yoloFailed = $true
+                throw "YOLO object detection is not available: $($_.Exception.Message)"
+            }
+
+            for ($i = 0; $i -lt $files.Length; $i++) {
+                try {
+                    $classes = Find-YoloObject -Path $files[$i].FullName -MinConfidence $this.MinYoloConfidence
+                    $text = Format-YoloLabel -Classes ($classes | Select-Object -First $this.MaxObjectLabels)
+
+                    if (-not [string]::IsNullOrEmpty($text)) {
+                        $results[$i] = "Objects: $text"
+                    }
+                }
+                catch {
+                    # Ein nicht dekodierbares Bild behält seinen bisherigen
+                    # Inhalt.
+                }
+            }
+        }
+
+        return $results
+    }
+
+
+    # Welche Objekterkennung verwendet wird; leer, wenn keine.
+    hidden [string] _GetObjectEngine() {
+        if (-not $this.DetectObjects) {
+            return ""
+        }
+
+        $useVision = $this.ObjectDetector -eq "Vision" -or ($this.ObjectDetector -eq "Auto" -and $global:IsMacOS)
+
+        if ($useVision) {
+            if ($global:IsMacOS -and -not [string]::IsNullOrEmpty($this._ocrTool) -and $this._ocrEngine -eq "Vision") {
+                return "Vision"
+            }
+
+            return ""
+        }
+
+        if (-not $this._yoloFailed -and (Test-YoloModel)) {
+            return "Yolo"
+        }
+
+        return ""
+    }
+
+
+    # Formate, die Vision zur Klassifizierung lesen kann.
+    hidden [string[]]$_visionObjectExtensions = @(".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif", ".webp", ".heic", ".heif")
+
+
+    # Alle Bilder in einem osascript-Aufruf; Ergebnis pro Bild eine Liste
+    # von Begriffen, nach Wahrscheinlichkeit sortiert.
+    hidden [object[]] _ClassifyWithVision([System.IO.FileInfo[]]$files) {
+        $arguments = [System.Collections.Generic.List[string]]::new()
+        $arguments.AddRange([string[]]@(
+            "-l", "JavaScript", "-e", [ImageOcrContentReader]::VisionClassifyScript,
+            $this.MinVisionConfidence.ToString([System.Globalization.CultureInfo]::InvariantCulture),
+            [string]$this.MaxObjectLabels
+        ))
+
+        foreach ($file in $files) {
+            $arguments.Add($file.FullName)
+        }
+
+        $output = $this.RunTool($this._ocrTool, $arguments.ToArray(), $this.OcrTimeoutSeconds + 5 * $files.Length)
+
+        return @($output | ConvertFrom-Json)
+    }
+
+
+    # "Objects: cat (Katze), sofa (Sofa)" aus einer Liste englischer Begriffe.
+    hidden static [string] FormatObjects([object]$labels) {
+        $parts = foreach ($label in @($labels)) {
+            if (-not [string]::IsNullOrWhiteSpace($label)) {
+                Format-ObjectLabel -Label ([string]$label)
+            }
+        }
+
+        $parts = @($parts)
+
+        if ($parts.Count -eq 0) {
+            return ""
+        }
+
+        return "Objects: " + ($parts -join ", ")
     }
 
 
@@ -458,6 +650,44 @@ function recognize(path) {
     }
 
     return lines.join('\n');
+}
+'@
+
+    # Bildklassifizierung: Argumente sind Mindestwahrscheinlichkeit, Höchstzahl
+    # der Begriffe und die Bildpfade. Ausgabe: JSON-Liste mit einer Liste von
+    # Begriffen pro Bild (leer, wenn das Bild nicht lesbar ist).
+    hidden static [string]$VisionClassifyScript = @'
+ObjC.import('Foundation');
+ObjC.import('Vision');
+
+function run(argv) {
+    const minConfidence = parseFloat(argv[0]);
+    const maxLabels = parseInt(argv[1]);
+    const results = [];
+
+    for (let i = 2; i < argv.length; i++) {
+        const request = $.VNClassifyImageRequest.alloc.init;
+        const handler = $.VNImageRequestHandler.alloc.initWithURLOptions($.NSURL.fileURLWithPath(argv[i]), $({}));
+        const found = [];
+
+        if (handler.performRequestsError($([request]), Ref())) {
+            const observations = request.results;
+
+            for (let j = 0; j < observations.count; j++) {
+                const observation = observations.objectAtIndex(j);
+
+                if (observation.confidence >= minConfidence) {
+                    found.push({ label: observation.identifier.js, confidence: observation.confidence });
+                }
+            }
+        }
+
+        // Wahrscheinlichste zuerst, dann auf maxLabels kürzen.
+        found.sort((a, b) => b.confidence - a.confidence);
+        results.push(found.slice(0, maxLabels).map(f => f.label));
+    }
+
+    return JSON.stringify(results);
 }
 '@
 

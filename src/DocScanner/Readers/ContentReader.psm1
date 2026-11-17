@@ -33,6 +33,17 @@ class ContentReader {
     # Kurze Beschreibung für Übersichten, z. B. "Word documents".
     [string]$Description = ""
 
+    # Größte Datei, die dieser Reader liest. 0: die Grenze des DocScanners
+    # (MaxContentSizeBytes). Reader, die nur Teile einer Datei lesen (z. B.
+    # die Metadaten eines Videos), setzen hier einen höheren Wert.
+    [long]$MaxFileSizeBytes = 0
+
+    # True für Reader, die pro Datei sehr lange brauchen (z. B. Videos). Der
+    # Crawler speichert solche Dateien zuerst ohne Inhalt und liest sie erst
+    # nach dem Scan im Hintergrund, damit der restliche Index nicht warten
+    # muss.
+    [bool]$RunsInBackground = $false
+
 
     # Lesbarer Name für Log- und Debug-Ausgaben.
     [string] GetName() {
@@ -61,6 +72,21 @@ class ContentReader {
     # externes Tool), können hier alle Dateien auf einmal verarbeiten und
     # die Ergebnisse für ReadContent() vorhalten. Standardmäßig nichts.
     [void] Prepare([System.IO.FileInfo[]]$files) {
+    }
+
+    # Optional: True, wenn der Reader zu dieser Datei nach dem normalen Lesen
+    # noch etwas ergänzen kann, das zu lange für den Scan dauert (z. B. die
+    # Objekte auf einem Foto). Der Crawler speichert die Datei dann zuerst mit
+    # dem gelesenen Inhalt und ruft Enrich() danach im Hintergrund auf.
+    [bool] CanEnrich([System.IO.FileInfo]$file) {
+        return $false
+    }
+
+    # Gibt für jede Datei den zusätzlichen Text zurück (gleiche Reihenfolge,
+    # leer, wenn nichts gefunden). Mehrere Dateien auf einmal, damit Reader
+    # ein externes Tool nur einmal starten müssen.
+    [string[]] Enrich([System.IO.FileInfo[]]$files) {
+        return [string[]]::new($files.Length)
     }
 
 

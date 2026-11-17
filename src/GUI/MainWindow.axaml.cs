@@ -34,8 +34,7 @@ namespace FileSearcherApp
             // Erst nach dem Laden auf Ereignisse reagieren.
             _windowLoaded = true;
 
-            //SearchBox.KeyDown += OnSearchKeyDown;
-            SearchBox.TextChanged += OnSearchTextChanged;
+            SearchBox.KeyDown += OnSearchKeyDown;
 
             UpdateSearchWatermark();
         }
@@ -139,7 +138,6 @@ namespace FileSearcherApp
             }
         }
 
-
         private void OnSortMenuItemClick(
             object? sender,
             RoutedEventArgs e)
@@ -185,28 +183,27 @@ namespace FileSearcherApp
 
         private async void PerformSearch()
         {
-            if (_isSearching)
+            if (!_windowLoaded || _isSearching)
                 return;
 
             _isSearching = true;
 
             try
             {
-                string query = SearchBox.Text ?? "";
+                string query = SearchBox.Text?.Trim() ?? "";
+
+                ResultsList.Items.Clear();
 
                 if (string.IsNullOrWhiteSpace(query))
                 {
-                    ResultsList.ItemsSource =
-                        new List<string>
-                        {
-                            "Bitte einen Suchbegriff eingeben."
-                        };
+                    SetCount(0);
+                    ResultsList.Items.Add("Bitte einen Suchbegriff eingeben.");
                     return;
                 }
 
                 _search ??= SearchBridge.CreateDefault();
 
-                int limit = 100;
+                int limit = SearchLimit;
                 string? extension = null;
 
                 var hits = await _search.SearchAsync(
@@ -217,23 +214,22 @@ namespace FileSearcherApp
 
                 if (hits == null || hits.Count == 0)
                 {
-                    ResultsList.ItemsSource =
-                        new List<string>
-                        {
-                            "Keine Treffer gefunden."
-                        };
+                    SetCount(0);
+                    ResultsList.Items.Add("Keine Treffer gefunden.");
                     return;
                 }
 
-                ResultsList.ItemsSource = hits;
+                SetCount(hits.Count);
+                foreach (var hit in hits)
+                {
+                    ResultsList.Items.Add(hit);
+                }
             }
             catch (Exception ex)
             {
-                ResultsList.ItemsSource =
-                    new List<string>
-                    {
-                        $"Fehler: {ex.Message}"
-                    };
+                SetCount(0);
+                ResultsList.Items.Clear();
+                ResultsList.Items.Add($"Fehler: {ex.Message}");
             }
             finally
             {

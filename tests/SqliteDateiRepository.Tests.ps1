@@ -221,6 +221,61 @@ Describe "SqliteDateiRepository" {
         $results[0].File.Extension | Should -Be ".txt"
     }
 
+    It "searches literal punctuation in filenames without FTS syntax errors" {
+        $text = New-TestDatei -Path (Join-Path $script:testRoot 'hsw.txt')
+        $pdf = New-TestDatei -Path (Join-Path $script:testRoot 'hsw.pdf')
+        $script:database.SaveBatch([Datei[]]@($text, $pdf))
+
+        @(Search-Query -Database $script:database -Query '.txt' -Literal).File.Name | Should -Be 'hsw.txt'
+        @(Search-Query -Database $script:database -Query '.' -Literal) | Should -HaveCount 2
+        @(Search-Query -Database $script:database -Query 'hsw' -Literal) | Should -HaveCount 2
+        @(Search-Query -Database $script:database -Query '.' -Literal -Extension 'TXT').File.Name | Should -Be 'hsw.txt'
+        @(Search-Query -Database $script:database -Query '.' -Literal -Limit 1) | Should -HaveCount 1
+        @(Search-Query -Database $script:database -Query '.' -Literal -SearchMode Content) | Should -HaveCount 0
+    }
+
+    It "returns punctuation filename matches through the GUI JSON adapter" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot 'adapter.txt')
+        $script:database.Save($file)
+        $adapter = Join-Path $PSScriptRoot '../Invoke-GuiSearch.ps1'
+
+        foreach ($query in @('.txt', '.')) {
+            $request = @{ query = $query; limit = 100 } | ConvertTo-Json -Compress
+            $json = $request | & (Get-Process -Id $PID).Path -NoProfile -NonInteractive `
+                -File $adapter -DatabasePath $script:databasePath
+            $response = $json | ConvertFrom-Json
+            $response.ok | Should -BeTrue
+            $response.count | Should -Be 1
+            $response.results[0].fileName | Should -Be 'adapter.txt'
+        }
+    }
+
+    It "escapes wildcard characters and FTS quotes in literal searches" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot 'rate_100%.txt')
+        $other = New-TestDatei -Path (Join-Path $script:testRoot 'rateX100x.txt')
+        $file.Content = 'quoted content marker'
+        $script:database.SaveBatch([Datei[]]@($file, $other))
+
+        @(Search-Query -Database $script:database -Query '_100%' -Literal -SearchMode FileName).File.Name |
+            Should -Be 'rate_100%.txt'
+        @(Search-Query -Database $script:database -Query '"quoted content"' -Literal -SearchMode Content) |
+            Should -HaveCount 1
+        @(Search-Query -Database $script:database -Query 'quoted OR missing' -Literal -SearchMode Content) |
+            Should -HaveCount 0
+        @(Search-Query -Database $script:database -Query 'quoted OR missing' -SearchMode Content) |
+            Should -HaveCount 1
+    }
+
+    It "deduplicates content and filename matches in literal searches" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot 'marker.txt')
+        $file.Content = 'marker appears here'
+        $script:database.Save($file)
+
+        @(Search-Query -Database $script:database -Query 'marker' -Literal) | Should -HaveCount 1
+        @(Search-Query -Database $script:database -Query 'marker' -Literal -SearchMode FileName) | Should -HaveCount 1
+        @(Search-Query -Database $script:database -Query 'marker' -Literal -SearchMode Content) | Should -HaveCount 1
+    }
+
     It "returns no results for blank queries and unmatched terms" {
         $file = New-TestDatei -Path (Join-Path $script:testRoot "notes.txt")
         $script:database.Save($file)

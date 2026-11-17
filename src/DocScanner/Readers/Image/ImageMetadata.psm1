@@ -111,6 +111,78 @@ class ImageMetadata {
     }
 
 
+    # True, wenn ein GIF mehrere Einzelbilder hat (Animation). Aufbau: Kopf
+    # (6 Byte), Bildschirmbeschreibung (7 Byte), eventuell globale
+    # Farbtabelle, dann Blöcke: 0x21 Erweiterung, 0x2C Einzelbild, 0x3B
+    # Ende. Erweiterungen und Bilddaten bestehen aus Unterblöcken mit einem
+    # Längenbyte vorn, ein Längenbyte 0 beendet sie.
+    static [bool] IsAnimatedGif([byte[]]$bytes) {
+        if ($bytes.Length -lt 13 -or [System.Text.Encoding]::ASCII.GetString($bytes, 0, 3) -ne "GIF") {
+            return $false
+        }
+
+        $position = 13
+
+        # Globale Farbtabelle: Bit 7 gesetzt, Größe 3 * 2^(n+1) Byte.
+        if (($bytes[10] -band 0x80) -ne 0) {
+            $position += 3 * (1 -shl (($bytes[10] -band 0x07) + 1))
+        }
+
+        $frames = 0
+
+        while ($position -lt $bytes.Length) {
+            $block = $bytes[$position]
+
+            if ($block -eq 0x3B) {
+                break
+            }
+
+            if ($block -eq 0x21) {
+                # Kennung und Label, dann Unterblöcke.
+                $position = [ImageMetadata]::SkipGifSubBlocks($bytes, $position + 2)
+                continue
+            }
+
+            if ($block -ne 0x2C -or $position + 10 -gt $bytes.Length) {
+                break
+            }
+
+            $frames++
+
+            if ($frames -gt 1) {
+                return $true
+            }
+
+            # Bildbeschreibung (10 Byte), lokale Farbtabelle, LZW-Codegröße
+            # (1 Byte), dann die Bilddaten als Unterblöcke.
+            $flags = $bytes[$position + 9]
+            $position += 10
+
+            if (($flags -band 0x80) -ne 0) {
+                $position += 3 * (1 -shl (($flags -band 0x07) + 1))
+            }
+
+            $position = [ImageMetadata]::SkipGifSubBlocks($bytes, $position + 1)
+        }
+
+        return $false
+    }
+
+
+    hidden static [int] SkipGifSubBlocks([byte[]]$bytes, [int]$position) {
+        while ($position -lt $bytes.Length) {
+            $length = $bytes[$position]
+            $position += 1 + $length
+
+            if ($length -eq 0) {
+                break
+            }
+        }
+
+        return $position
+    }
+
+
     # =============================================================================
     # FORMATE
     # =============================================================================
