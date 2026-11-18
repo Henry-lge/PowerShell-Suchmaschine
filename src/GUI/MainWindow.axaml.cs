@@ -34,9 +34,6 @@ namespace FileSearcherApp
             InitializeCrawlerStatus();
         }
 
-        // =========================================================================
-        // NEU: Live-Status, Ladebalken & Phase-2-Restzeit aus CrawlerService anzeigen
-        // =========================================================================
         private void InitializeCrawlerStatus()
         {
             var statusText = this.FindControl<TextBlock>("ScanStatusText");

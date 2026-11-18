@@ -19,13 +19,6 @@ namespace FileSearcherApp
         public event Action<double, bool>? ProgressChanged;
         public event Action? ScanCompleted;
 
-        // =========================================================================
-        // NEU: Datenbank-Pfad & Prüfung auf bestehenden Index inkl. Zeitstempel
-        // =========================================================================
-
-        /// <summary>
-        /// Ermittelt das Hauptverzeichnis des Projekts.
-        /// </summary>
         public string GetProjectRoot()
         {
             string baseDir = AppDomain.CurrentDomain.BaseDirectory;
@@ -96,8 +89,6 @@ namespace FileSearcherApp
             UpdateStatus($"Bestehender Index aktiv (Letzte Aktualisierung: {lastUpdated:dd.MM.yyyy 'um' HH:mm 'Uhr'}).");
         }
 
-        // =========================================================================
-
         public void StartBackgroundScan()
         {
             if (IsScanning) return;
@@ -130,7 +121,6 @@ namespace FileSearcherApp
 
             try
             {
-                // <--- GEÄNDERT: Nutzt jetzt die gemeinsame Hilfsmethode GetProjectRoot()
                 string projectRoot = GetProjectRoot();
                 string crawlerModulePath = Path.Combine(projectRoot, "src", "Crawler", "Crawler.psm1");
 
@@ -212,7 +202,7 @@ namespace FileSearcherApp
                 phase2Stopwatch.Stop();
 
                 UpdateProgress(100, false);
-                UpdateStatus("Index ist vollständig auf dem neuesten Stand.");
+                UpdateStatus("Inhalt auf dem neuesten Stand.");
             }
             catch (Exception ex)
             {
