@@ -250,6 +250,33 @@ Describe "SqliteDateiRepository" {
         }
     }
 
+    It "accepts literal mode and extension filters in GUI JSON requests" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot 'adapter.txt')
+        $script:database.Save($file)
+        $adapter = Join-Path $PSScriptRoot '../Invoke-GuiSearch.ps1'
+        $request = @{
+            query = '.'
+            mode = 'filename'
+            literal = $true
+            includeExtensions = @('txt', 'pdf')
+            excludeExtensions = @('pdf')
+        } | ConvertTo-Json -Compress
+
+        $json = $request | & (Get-Process -Id $PID).Path -NoProfile -NonInteractive `
+            -File $adapter -DatabasePath $script:databasePath
+        $response = $json | ConvertFrom-Json
+        $response.ok | Should -BeTrue
+        $response.count | Should -Be 1
+        $response.results[0].matchedIn | Should -Be 'Dateiname'
+
+        $request = @{ action = 'listExtensions' } | ConvertTo-Json -Compress
+        $json = $request | & (Get-Process -Id $PID).Path -NoProfile -NonInteractive `
+            -File $adapter -DatabasePath $script:databasePath
+        $response = $json | ConvertFrom-Json
+        $response.ok | Should -BeTrue
+        $response.extensions | Should -Be @('.txt')
+    }
+
     It "escapes wildcard characters and FTS quotes in literal searches" {
         $file = New-TestDatei -Path (Join-Path $script:testRoot 'rate_100%.txt')
         $other = New-TestDatei -Path (Join-Path $script:testRoot 'rateX100x.txt')
@@ -274,6 +301,58 @@ Describe "SqliteDateiRepository" {
         @(Search-Query -Database $script:database -Query 'marker' -Literal) | Should -HaveCount 1
         @(Search-Query -Database $script:database -Query 'marker' -Literal -SearchMode FileName) | Should -HaveCount 1
         @(Search-Query -Database $script:database -Query 'marker' -Literal -SearchMode Content) | Should -HaveCount 1
+    }
+
+    It "supports included and excluded extension lists and returns indexed extensions" {
+        $textFile = New-TestDatei -Path (Join-Path $script:testRoot "report.txt")
+        $pdfFile = New-TestDatei -Path (Join-Path $script:testRoot "report.pdf")
+        $wordFile = New-TestDatei -Path (Join-Path $script:testRoot "report.docx")
+        foreach ($file in @($textFile, $pdfFile, $wordFile)) {
+            $file.Content = "extensionlistmarker"
+        }
+        $script:database.SaveBatch([Datei[]]@($textFile, $pdfFile, $wordFile))
+
+        (Get-SearchExtensions -Database $script:database) |
+            Should -Be @(".docx", ".pdf", ".txt")
+        $results = @(
+            Search-Query -Database $script:database -Query "extensionlistmarker" `
+                -IncludeExtensions @("TXT", "pdf") -ExcludeExtensions @(".PDF")
+        )
+        $results | Should -HaveCount 1
+        $results[0].File.Extension | Should -Be ".txt"
+
+        $results = @(
+            Search-Query -Database $script:database -Query "extensionlistmarker" `
+                -ExcludeExtensions @("txt", "docx")
+        )
+        $results | Should -HaveCount 1
+        $results[0].File.Extension | Should -Be ".pdf"
+    }
+
+    It "applies extension filters to literal searches" {
+        $textFile = New-TestDatei -Path (Join-Path $script:testRoot "literal.txt")
+        $pdfFile = New-TestDatei -Path (Join-Path $script:testRoot "literal.pdf")
+        $script:database.SaveBatch([Datei[]]@($textFile, $pdfFile))
+
+        $results = @(
+            Search-Query -Database $script:database -Query "." `
+                -Literal -IncludeExtensions @("txt", "pdf") `
+                -ExcludeExtensions @("PDF") -SearchMode FileName
+        )
+
+        $results | Should -HaveCount 1
+        $results[0].File.Extension | Should -Be ".txt"
+    }
+
+    It "searches hyphenated words as adjacent indexed tokens" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot "state-of-the-art.txt")
+        $file.Content = "A state-of-the-art search marker."
+        $script:database.Save($file)
+
+        $results = @(Search-Query -Database $script:database -Query "state-of-the-art")
+
+        $results | Should -HaveCount 1
+        $results[0].File.Path | Should -Be $file.Path
     }
 
     It "returns no results for blank queries and unmatched terms" {
