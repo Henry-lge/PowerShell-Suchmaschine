@@ -1,14 +1,13 @@
-
 using System;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
-using System.Diagnostics;
-using System.IO;
-
+using Avalonia.Threading;
 namespace FileSearcherApp
 {
     public partial class MainWindow : Window
@@ -37,62 +36,74 @@ namespace FileSearcherApp
             SearchBox.KeyDown += OnSearchKeyDown;
 
             UpdateSearchWatermark();
+
+            // <--- NEU: Statusleiste & Fortschrittsbalken mit dem Hintergrund-Crawler verbinden
+            InitializeCrawlerStatus();
         }
 
-         // Live-Suche: nach jeder Eingabe warten, dann suchen
-        private void OnSearchTextChanged(object? sender, TextChangedEventArgs e)
-            => _ = RunSearchAsync(DebounceMs);
-
-        // Button: sofort suchen, ohne Wartezeit
-        private void OnSearchClicked(object? sender, RoutedEventArgs e)
-            => _ = RunSearchAsync(0);
-
-        private async Task RunSearchAsync(int delayMs)
+        private void InitializeCrawlerStatus()
         {
-            // Wartende oder laufende Suche der vorherigen Eingabe abbrechen
-            _cts?.Cancel();
-            var cts = _cts = new CancellationTokenSource();
-            var ct = cts.Token;
+            var statusText = this.FindControl<TextBlock>("ScanStatusText");
+            var progressBar = this.FindControl<ProgressBar>("ScanProgressBar");
 
-            var text = SearchBox.Text?.Trim() ?? "";
-            if (text.Length == 0)
+            // Aktuellen Stand direkt beim Öffnen des Fensters übernehmen
+            if (statusText != null)
             {
-                ResultsList.Items.Clear();
-                SetCount(0); 
-                return;
+                statusText.Text = App.CrawlerService.CurrentStatus;
             }
-            // Automatisch erst ab MinChars Zeichen; der Button sucht immer
-            if (delayMs > 0 && text.Length < MinChars) return;
 
-            try
+            if (progressBar != null)
             {
-                if (delayMs > 0) await Task.Delay(delayMs, ct);
-
-                _search ??= SearchBridge.CreateDefault();
-                var hits = await _search.SearchAsync(text, ct: ct);
-
-                // Falls inzwischen eine neuere Eingabe da ist, Ergebnis verwerfen
-                ct.ThrowIfCancellationRequested();
-
-                ResultsList.Items.Clear();
-                SetCount(hits.Count);
-                if (hits.Count == 0) { ResultsList.Items.Add("Keine Treffer."); return; }
-                foreach (var hit in hits) ResultsList.Items.Add(hit);
+                progressBar.IsVisible = App.CrawlerService.IsScanning;
+                progressBar.IsIndeterminate = App.CrawlerService.IsIndeterminate;
+                progressBar.Value = App.CrawlerService.CurrentProgress;
             }
-            catch (OperationCanceledException)
+
+            // Event-Handler für Live-Updates definieren
+            void OnStatusChanged(string status) =>
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (statusText != null)
+                    {
+                        statusText.Text = status;
+                    }
+                });
+
+            void OnProgressChanged(double val, bool isIndeterminate) =>
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (progressBar != null)
+                    {
+                        progressBar.IsVisible = true;
+                        progressBar.IsIndeterminate = isIndeterminate;
+                        progressBar.Value = val;
+                    }
+                });
+
+            void OnScanCompleted() =>
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (progressBar != null)
+                    {
+                        progressBar.IsVisible = false;
+                    }
+                });
+
+            // Events abonnieren
+            App.CrawlerService.StatusChanged += OnStatusChanged;
+            App.CrawlerService.ProgressChanged += OnProgressChanged;
+            App.CrawlerService.ScanCompleted += OnScanCompleted;
+
+            // Events beim Schließen des Fensters sauber abmelden
+            Closed += (_, _) =>
             {
-                // normal: neuere Eingabe hat diese Suche abgelöst
-            }
-            catch (Exception ex)
-            {
-                if (ct.IsCancellationRequested) return;
-                ResultsList.Items.Clear();
-                SetCount(0);    
-                ResultsList.Items.Add($"Fehler: {ex.Message}");
-            }
-        }    
+                App.CrawlerService.StatusChanged -= OnStatusChanged;
+                App.CrawlerService.ProgressChanged -= OnProgressChanged;
+                App.CrawlerService.ScanCompleted -= OnScanCompleted;
+            };
+        }
+        // =========================================================================
 
-     
         private void OnFilterMenuItemClick(
             object? sender,
             RoutedEventArgs e)
