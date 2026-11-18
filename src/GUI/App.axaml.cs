@@ -1,7 +1,7 @@
 using System;
 using System.Threading.Tasks;
 using Avalonia;
-using Avalonia.Controls; // <--- NEU: Für ShutdownMode
+using Avalonia.Controls; 
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 
@@ -21,7 +21,6 @@ namespace FileSearcherApp
             if (ApplicationLifetime is
                 IClassicDesktopStyleApplicationLifetime desktop)
             {
-                // <--- NEU: Verhindert, dass die App beim Schließen des SplashScreens vorzeitig beendet wird
                 desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
 
                 desktop.Exit += (_, _) => CrawlerService.StopScan();
@@ -51,7 +50,6 @@ namespace FileSearcherApp
                 {
                     var dialog = new AskForRescanWindow(lastUpdated);
 
-                    // <--- GEÄNDERT: Abfragefenster anzeigen und SplashScreen sofort schließen
                     desktop.MainWindow = dialog;
                     dialog.Show();
                     splashScreen.Close();
@@ -81,7 +79,7 @@ namespace FileSearcherApp
                 var mainWindow = new MainWindow();
                 desktop.MainWindow = mainWindow;
 
-                // <--- NEU: Normales Beenden der App aktivieren, sobald das Hauptfenster geschlossen wird
+                // Normales Beenden der App aktivieren, sobald das Hauptfenster geschlossen wird
                 desktop.ShutdownMode = ShutdownMode.OnMainWindowClose;
 
                 mainWindow.Show();
@@ -104,7 +102,7 @@ namespace FileSearcherApp
                 };
 
                 desktop.MainWindow = errorWindow;
-                desktop.ShutdownMode = ShutdownMode.OnMainWindowClose; // <--- NEU: App beendet sich beim Schließen des Fehlerfensters
+                desktop.ShutdownMode = ShutdownMode.OnMainWindowClose; 
                 errorWindow.Show();
             }
         }

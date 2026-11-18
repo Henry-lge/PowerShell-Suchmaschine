@@ -37,7 +37,7 @@ namespace FileSearcherApp
 
             UpdateSearchWatermark();
 
-            // <--- NEU: Statusleiste & Fortschrittsbalken mit dem Hintergrund-Crawler verbinden
+            //Statusleiste & Fortschrittsbalken mit dem Hintergrund-Crawler verbinden
             InitializeCrawlerStatus();
         }
 
