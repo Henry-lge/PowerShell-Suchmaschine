@@ -197,9 +197,14 @@ namespace FileSearcherApp
 
                 process.Start();
                 process.BeginOutputReadLine();
-                process.WaitForExit();
+process.WaitForExit();
 
                 phase2Stopwatch.Stop();
+
+                if (process.ExitCode != 0)
+                {
+                    throw new InvalidOperationException($"Crawler-Prozess beendet mit Exitcode {process.ExitCode}.");
+                }
 
                 UpdateProgress(100, false);
                 UpdateStatus("Inhalt auf dem neuesten Stand.");
