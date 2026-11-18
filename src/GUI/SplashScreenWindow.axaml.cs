@@ -6,7 +6,7 @@ namespace FileSearcherApp
 {
     public partial class SplashScreenWindow : Window
     {
-        // <--- NEU: Referenzen auf die XAML-Steuerelemente
+        // Referenzen auf die XAML-Steuerelemente
         private readonly TextBlock? _statusTextBlock;
         private readonly ProgressBar? _crawlerProgressBar;
 
@@ -14,7 +14,7 @@ namespace FileSearcherApp
         {
             InitializeComponent();
 
-            // <--- NEU: Steuerelemente sicher verknüpfen
+            //Steuerelemente sicher verknüpfen
             _statusTextBlock = this.FindControl<TextBlock>("StatusTextBlock");
             _crawlerProgressBar = this.FindControl<ProgressBar>("CrawlerProgressBar");
         }

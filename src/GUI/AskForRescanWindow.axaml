@@ -8,7 +8,7 @@
         CanResize="False"
         Icon="avares://FileSearcherApp/GUIAssets/icon.png"
         Background="#0c3835">
-    <!-- <- GEÄNDERT: WindowStartupLocation von "CenterOwner" auf "CenterScreen", da der SplashScreen jetzt geschlossen wird -->
+    <!-- WindowStartupLocation von "CenterOwner" auf "CenterScreen", da der SplashScreen jetzt geschlossen wird -->
 
     <Grid Margin="20" RowDefinitions="Auto,*,Auto">
 

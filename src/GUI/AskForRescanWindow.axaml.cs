@@ -1,5 +1,5 @@
 using System;
-using System.Threading.Tasks; // <--- NEU: Für TaskCompletionSource<bool>
+using System.Threading.Tasks; 
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 
@@ -9,7 +9,7 @@ namespace FileSearcherApp
     {
         private readonly TextBlock? _messageText;
 
-        // <--- NEU: Ermöglicht das Warten auf die Antwort ohne offenen SplashScreen als Owner
+        // Ermöglicht das Warten auf die Antwort ohne offenen SplashScreen als Owner
         private readonly TaskCompletionSource<bool> _resultSource = new();
 
         public AskForRescanWindow()
@@ -17,7 +17,7 @@ namespace FileSearcherApp
             InitializeComponent();
             _messageText = this.FindControl<TextBlock>("MessageText");
 
-            // <--- NEU: Falls das Fenster über das "X" geschlossen wird, Standardwert "false" liefern
+            //Falls das Fenster über das "X" geschlossen wird, Standardwert "false" liefern
             Closed += (_, _) => _resultSource.TrySetResult(false);
         }
 
@@ -31,18 +31,18 @@ namespace FileSearcherApp
             }
         }
 
-        // <--- NEU: Wartet asynchron, bis der Nutzer einen Button geklickt hat
+        //Wartet asynchron, bis der Nutzer einen Button geklickt hat
         public Task<bool> WaitForResultAsync() => _resultSource.Task;
 
         private void OnYesClicked(object? sender, RoutedEventArgs e)
         {
-            _resultSource.TrySetResult(true); // <--- GEÄNDERT: Ergebnis setzen und Fenster schließen
+            _resultSource.TrySetResult(true); //Ergebnis setzen und Fenster schließen
             Close();
         }
 
         private void OnNoClicked(object? sender, RoutedEventArgs e)
         {
-            _resultSource.TrySetResult(false); // <--- GEÄNDERT: Ergebnis setzen und Fenster schließen
+            _resultSource.TrySetResult(false); //Ergebnis setzen und Fenster schließen
             Close();
         }
     }

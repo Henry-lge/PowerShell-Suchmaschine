@@ -193,13 +193,27 @@ namespace FileSearcherApp
                     }
                 };
 
+                process.ErrorDataReceived += (sender, e) =>
+                {
+                    if (!string.IsNullOrWhiteSpace(e.Data))
+                    {
+                        Console.WriteLine($"[Crawler-Warnung/Fehler] {e.Data}");
+                    }
+                };
+
                 phase2Stopwatch.Start();
 
                 process.Start();
                 process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
                 process.WaitForExit();
 
                 phase2Stopwatch.Stop();
+
+                if (process.ExitCode != 0)
+                {
+                    throw new InvalidOperationException($"Crawler-Prozess beendet mit Exitcode {process.ExitCode}.");
+                }
 
                 UpdateProgress(100, false);
                 UpdateStatus("Inhalt auf dem neuesten Stand.");
