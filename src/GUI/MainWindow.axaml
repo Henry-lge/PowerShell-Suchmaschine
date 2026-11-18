@@ -1,147 +1,215 @@
 <Window xmlns="https://github.com/avaloniaui"
-        MinWidth="650"
-        MinHeight="450"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="using:FileSearcherApp"
         x:Class="FileSearcherApp.MainWindow"
         Title="Dateisuche über Powershell"
+        MinWidth="650"
+        MinHeight="450"
         Width="650"
         Height="450"
         Icon="avares://FileSearcherApp/GUIAssets/icon.png"
         Background="#0c3835">
 
-    <Grid Margin="20" RowDefinitions="Auto,Auto,Auto,Auto,*">
+    <Window.Styles>
+        <Style Selector="ToolTip">
+            <Setter Property="Background" Value="#001816"/>
+            <Setter Property="Foreground" Value="#C9DDDC"/>
+            <Setter Property="BorderBrush" Value="#3F6B68"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Padding" Value="12"/>
+        </Style>
 
-        <!-- Überschrift & Zähler -->
-        <Grid Grid.Row="1"
-              ColumnDefinitions="*,Auto"
-              Margin="0,0,0,10">
-            <TextBlock Grid.Column="0"
-                       x:Name="WelcomeText"
-                       Text="Hallo!"
-                       Foreground="#8AABAA"
-                       FontSize="18"
-                       FontWeight="Bold"
-                       VerticalAlignment="Center"
-                       HorizontalAlignment="Left"/>
+        <Style Selector="ListBoxItem">
+            <Setter Property="Padding" Value="0"/>
+        </Style>
+    </Window.Styles>
 
-            <TextBlock Grid.Column="1"
-                       x:Name="ResultsCountText"
-                       Text="Dateien gefunden: 0"
-                       Foreground="#8AABAA"
-                       FontSize="18"
-                       FontWeight="Bold"
-                       VerticalAlignment="Center"
-                       HorizontalAlignment="Right"/>
-        </Grid>
+    <Grid RowDefinitions="*,Auto">
 
-        <!-- Suchfeld und Buttons -->
-        <Grid Grid.Row="2"
-              ColumnDefinitions="*,Auto,Auto"
-              Margin="0,0,0,10">
+        <Grid Grid.Row="0" Margin="20" RowDefinitions="Auto,Auto,Auto,*">
 
-            <Border Grid.Column="0"
-                    CornerRadius="8"
-                    Background="#001816"
-                    Margin="0,0,10,0">
-                <TextBox x:Name="SearchBox"
-                         Watermark="Suchbegriff eingeben..."
-                         Background="Transparent"
-                         BorderBrush="Transparent"
-                         FontSize="16"
-                         Margin="4"/>
+            <!-- Überschrift & Zähler -->
+            <Grid Grid.Row="0"
+                  ColumnDefinitions="*,Auto"
+                  Margin="0,0,0,10">
+                <TextBlock Grid.Column="0"
+                           x:Name="WelcomeText"
+                           Text="Hallo!"
+                           Foreground="#8AABAA"
+                           FontSize="18"
+                           FontWeight="Bold"
+                           VerticalAlignment="Center"
+                           HorizontalAlignment="Left"/>
+
+                <TextBlock Grid.Column="1"
+                           x:Name="ResultsCountText"
+                           Text="Dateien gefunden: 0"
+                           Foreground="#8AABAA"
+                           FontSize="18"
+                           FontWeight="Bold"
+                           VerticalAlignment="Center"
+                           HorizontalAlignment="Right"/>
+            </Grid>
+
+            <!-- Suchfeld und Buttons -->
+            <Grid Grid.Row="1"
+                  ColumnDefinitions="*,Auto,Auto"
+                  Margin="0,0,0,10">
+
+                <Border Grid.Column="0"
+                        CornerRadius="8"
+                        Background="#001816"
+                        Margin="0,0,10,0">
+                    <TextBox x:Name="SearchBox"
+                             Watermark="Suchbegriff eingeben..."
+                             Background="Transparent"
+                             BorderBrush="Transparent"
+                             Foreground="#C9DDDC"
+                             CaretBrush="#C9DDDC"
+                             FontSize="16"
+                             Margin="4"/>
+                </Border>
+
+                <!-- Filterbutton -->
+                <Button Grid.Column="1"
+                        Width="40"
+                        Height="40"
+                        CornerRadius="20"
+                        Background="#001816"
+                        Foreground="#8AABAA"
+                        Padding="0"
+                        Margin="0,0,5,0"
+                        ToolTip.Tip="Suchfilter auswählen">
+                    <Image Source="avares://FileSearcherApp/GUIAssets/filterIcon.png"
+                           Width="20"
+                           Height="20"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"/>
+                    <Button.Flyout>
+                        <MenuFlyout>
+                            <MenuItem Header="Nach Name" Tag="FileName" Click="OnFilterMenuItemClick"/>
+                            <MenuItem Header="Nach Inhalt" Tag="Content" Click="OnFilterMenuItemClick"/>
+                            <MenuItem Header="Nach Beidem" Tag="Both" Click="OnFilterMenuItemClick"/>
+                        </MenuFlyout>
+                    </Button.Flyout>
+                </Button>
+
+                <!-- Einstellungsbutton -->
+                <Button Grid.Column="2"
+                        Width="40"
+                        Height="40"
+                        CornerRadius="20"
+                        Background="#001816"
+                        Foreground="#8AABAA"
+                        Padding="0"
+                        ToolTip.Tip="Einstellungen">
+                    <Image Source="avares://FileSearcherApp/GUIAssets/settingsIcon.png"
+                           Width="20"
+                           Height="20"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"/>
+                    <Button.Flyout>
+                        <MenuFlyout>
+                            <MenuItem Header="Gestalten"/>
+                            <MenuItem Header="filler"/>
+                            <MenuItem Header="Die Gui ist schuld"/>
+                        </MenuFlyout>
+                    </Button.Flyout>
+                </Button>
+            </Grid>
+
+            <!-- Tabellenkopf -->
+            <Border Grid.Row="2"
+                    BorderBrush="#408AABAA"
+                    BorderThickness="0,0,0,1"
+                    Padding="12,6,28,6">
+                <Grid ColumnDefinitions="2*,60,130,3*" ColumnSpacing="12">
+                    <TextBlock Grid.Column="0" Text="Datei"    FontWeight="Bold" Foreground="#8AABAA"/>
+                    <TextBlock Grid.Column="1" Text="Typ"      FontWeight="Bold" Foreground="#8AABAA"/>
+                    <TextBlock Grid.Column="2" Text="Geändert" FontWeight="Bold" Foreground="#8AABAA"/>
+                    <TextBlock Grid.Column="3" Text="Pfad"     FontWeight="Bold" Foreground="#8AABAA"/>
+                </Grid>
             </Border>
 
-            <!-- Filterbutton -->
-            <Button Grid.Column="1"
-                    Width="40"
-                    Height="40"
-                    CornerRadius="20"
-                    Background="#001816"
-                    Foreground="#8AABAA"
-                    Padding="0"
-                    Margin="0,0,5,0"
-                    ToolTip.Tip="Suchfilter auswählen">
-                <Image Source="avares://FileSearcherApp/GUIAssets/filterIcon.png"
-                       Width="20"
-                       Height="20"
-                       HorizontalAlignment="Center"
-                       VerticalAlignment="Center"/>
-                <Button.Flyout>
-                    <MenuFlyout>
-                        <MenuItem Header="Nach Name" Tag="FileName" Click="OnFilterMenuItemClick"/>
-                        <MenuItem Header="Nach Inhalt" Tag="Content" Click="OnFilterMenuItemClick"/>
-                        <MenuItem Header="Nach Beidem" Tag="Both" Click="OnFilterMenuItemClick"/>
-                    </MenuFlyout>
-                </Button.Flyout>
-            </Button>
+            <!-- Ergebnisliste -->
+            <ListBox Grid.Row="3"
+                     x:Name="ResultsList"
+                     HorizontalAlignment="Stretch"
+                     VerticalAlignment="Stretch"
+                     Background="#001816"
+                     Foreground="#8AABAA"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
 
-            <!-- Einstellungsbutton -->
-            <Button Grid.Column="2"
-                    Width="40"
-                    Height="40"
-                    CornerRadius="20"
-                    Background="#001816"
-                    Foreground="#8AABAA"
-                    Padding="0"
-                    ToolTip.Tip="Einstellungen">
-             <Image Source="avares://FileSearcherApp/GUIAssets/settingsIcon.png"
-                  Width="20"
-                   Height="20"
-                   HorizontalAlignment="Center"
-                   VerticalAlignment="Center"/>
-                <Button.Flyout>
-                    <MenuFlyout>
-                        <MenuItem Header="Gestalten"/>
-                        <MenuItem Header="filler"/>
-                        <MenuItem Header="Die Gui ist schuld"/>
-                    </MenuFlyout>
-                </Button.Flyout>
-            </Button>
+                <ListBox.DataTemplates>
+                    <DataTemplate x:DataType="local:SearchHit">
+                        <Border Background="Transparent"
+                                HorizontalAlignment="Stretch"
+                                Padding="12,9"
+                                Tapped="OnSearchHitTapped"
+                                Cursor="Hand"
+                                ToolTip.ShowDelay="400"
+                                ToolTip.Placement="Right">
+                            <ToolTip.Tip>
+                                <StackPanel Spacing="6" MaxWidth="480">
+                                    <TextBlock Text="{Binding FileName}" FontWeight="Bold"/>
+                                    <Separator/>
+
+                                    <!-- Vorschaubild (nur bei Bilddateien sichtbar) -->
+                                    <Image Source="{Binding Path, Converter={x:Static local:ThumbnailConverter.Instance}}"
+                                           IsVisible="{Binding $self.Source, Converter={x:Static ObjectConverters.IsNotNull}}"
+                                           MaxWidth="320"
+                                           MaxHeight="200"
+                                           Stretch="Uniform"
+                                           HorizontalAlignment="Left"/>
+
+                                    <TextBlock Inlines="{Binding Preview, Converter={x:Static local:HighlightConverter.Instance}}"
+                                               IsVisible="{Binding Path, Converter={x:Static local:FileTypeConverters.IsNotImage}}"
+                                               TextWrapping="Wrap"
+                                               MaxHeight="220"
+                                               TextTrimming="CharacterEllipsis"/>
+                                    <Separator/>
+                                    <TextBlock Text="{Binding Path}" Opacity="0.7" TextWrapping="Wrap" FontSize="11"/>
+                                    <TextBlock Text="{Binding LastWriteText}" Opacity="0.7" FontSize="11"/>
+                                </StackPanel>
+                            </ToolTip.Tip>
+
+                            <Grid ColumnDefinitions="2*,60,130,3*" ColumnSpacing="12">
+                                <TextBlock Grid.Column="0" Text="{Binding FileName}" TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Grid.Column="1" Text="{Binding Extension}" Opacity="0.8" TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Grid.Column="2" Text="{Binding LastWriteText}" Opacity="0.8" TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Grid.Column="3" Text="{Binding Path}" Opacity="0.8" TextTrimming="CharacterEllipsis"/>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ListBox.DataTemplates>
+            </ListBox>
+
         </Grid>
 
-         <!-- Ergebnisliste -->
-        <ListBox Grid.Row="4"
-                 x:Name="ResultsList"
-                 HorizontalAlignment="Stretch"
-                 VerticalAlignment="Stretch"
-                 Background="#001816"
-                 Foreground="#8AABAA"
-                 ScrollViewer.VerticalScrollBarVisibility="Auto"
-                 ScrollViewer.HorizontalScrollBarVisibility="Auto">
-
-            <ListBox.Styles>
-                <Style Selector="ListBoxItem">
-                    <Setter Property="Padding" Value="0"/>
-                </Style>
-            </ListBox.Styles>
-
-            <ListBox.DataTemplates>
-                <DataTemplate DataType="local:SearchHit">
-                    <Border Background="Transparent"
-                            HorizontalAlignment="Stretch"
-                            Padding="12,9"
-                            ToolTip.ShowDelay="400"
-                            ToolTip.Placement="Right">
-
-                        <ToolTip.Tip>
-                            <StackPanel Spacing="6" MaxWidth="480">
-                                <TextBlock Text="{Binding FileName}" FontWeight="Bold"/>
-                                <TextBlock Text="{Binding Path}" Opacity="0.7" TextWrapping="Wrap" FontSize="11"/>
-                                <TextBlock Text="{Binding LastWriteText}" Opacity="0.7" FontSize="11"/>
-                                <Separator/>
-                                <TextBlock Inlines="{Binding Preview, Converter={x:Static local:HighlightConverter.Instance}}"
-                                           TextWrapping="Wrap"
-                                           MaxHeight="220"
-                                           TextTrimming="CharacterEllipsis"/>
-                            </StackPanel>
-                        </ToolTip.Tip>
-
-                        <TextBlock Text="{Binding}" TextTrimming="CharacterEllipsis"/>
-                    </Border>
-                </DataTemplate>
-            </ListBox.DataTemplates>
-        </ListBox>
+        <!-- Statusleiste -->
+        <Border Grid.Row="1" Background="#082624" Padding="10,6">
+            <Grid ColumnDefinitions="*,Auto">
+                <TextBlock x:Name="ScanStatusText"
+                           Grid.Column="0"
+                           Text="Bereit"
+                           Foreground="#80A09F"
+                           FontSize="12"
+                           VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis"
+                           Margin="0,0,12,0"/>
+                <ProgressBar x:Name="ScanProgressBar"
+                             Grid.Column="1"
+                             Width="150"
+                             Height="6"
+                             IsVisible="False"
+                             IsIndeterminate="False"
+                             Foreground="#80A09F"
+                             Background="#0c3835"
+                             VerticalAlignment="Center"/>
+            </Grid>
+        </Border>
 
     </Grid>
 </Window>

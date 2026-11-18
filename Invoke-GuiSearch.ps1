@@ -66,6 +66,7 @@ if (-not $PSBoundParameters.ContainsKey('Query')) {
         $database = Initialize-Database -DatabasePath $DatabasePath 6>$null 3>$null
 
         # Die gesamte Suchlogik liegt hinter der DB-Schnittstelle.
+        # $results = @(Search-Query -Database $database -Query $Query -Limit $Limit -Extension $Extension -SearchMode $SearchMode |
         $searchParameters = @{
             Database = $database
             Query = $Query

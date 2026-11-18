@@ -1,0 +1,59 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="FileSearcherApp.AskForRescanWindow"
+        Title="Suchindex aktualisieren?"
+        Width="480"
+        Height="235"
+        WindowStartupLocation="CenterScreen"
+        CanResize="False"
+        Icon="avares://FileSearcherApp/GUIAssets/icon.png"
+        Background="#0c3835">
+    <!-- WindowStartupLocation von "CenterOwner" auf "CenterScreen", da der SplashScreen jetzt geschlossen wird -->
+
+    <Grid Margin="20" RowDefinitions="Auto,*,Auto">
+
+        <!-- Überschrift -->
+        <TextBlock Grid.Row="0"
+                   Text="Vorhandener Suchindex gefunden"
+                   FontSize="18"
+                   FontWeight="Bold"
+                   Foreground="#8AABAA"
+                   Margin="0,0,0,12"/>
+
+        <!-- Hinweistext mit Datum der letzten Aktualisierung -->
+        <Border Grid.Row="1"
+                Background="#001816"
+                CornerRadius="8"
+                Padding="14,12">
+            <TextBlock x:Name="MessageText"
+                       Text="Es existiert bereits eine Datenbank. Möchtest du den Ordner erneut scannen?"
+                       FontSize="13"
+                       Foreground="#8AABAA"
+                       TextWrapping="Wrap"
+                       VerticalAlignment="Center"/>
+        </Border>
+
+        <!-- Auswahl-Buttons -->
+        <StackPanel Grid.Row="2"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Spacing="10"
+                    Margin="0,15,0,0">
+
+            <Button Content="Nein, bestehenden Index nutzen"
+                    Background="#001816"
+                    Foreground="#8AABAA"
+                    CornerRadius="8"
+                    Padding="14,8"
+                    Click="OnNoClicked"/>
+
+            <Button Content="Ja, erneut scannen"
+                    Background="#196b65"
+                    Foreground="White"
+                    CornerRadius="8"
+                    Padding="14,8"
+                    Click="OnYesClicked"/>
+        </StackPanel>
+
+    </Grid>
+</Window>

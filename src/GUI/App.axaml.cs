@@ -1,9 +1,7 @@
 using System;
-using System.Diagnostics;
-using System.IO;
-using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Avalonia;
+using Avalonia.Controls; 
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 
@@ -11,6 +9,8 @@ namespace FileSearcherApp
 {
     public partial class App : Application
     {
+        public static CrawlerService CrawlerService { get; } = new CrawlerService();
+
         public override void Initialize()
         {
             AvaloniaXamlLoader.Load(this);
@@ -18,14 +18,18 @@ namespace FileSearcherApp
 
         public override void OnFrameworkInitializationCompleted()
         {
-            if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+            if (ApplicationLifetime is
+                IClassicDesktopStyleApplicationLifetime desktop)
             {
+                desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
+                desktop.Exit += (_, _) => CrawlerService.StopScan();
+
                 var splashScreen = new SplashScreenWindow();
 
                 desktop.MainWindow = splashScreen;
                 splashScreen.Show();
 
-                // Startet den gesamten Initialisierungs- und Scan-Prozess im Hintergrund
                 _ = InitializeApplicationAsync(desktop, splashScreen);
             }
 
@@ -38,129 +42,68 @@ namespace FileSearcherApp
         {
             try
             {
-                // Echten Crawler-Scan im Hintergrund ausführen
-                await Task.Run(() => StartCrawlerScan(splashScreen));
 
-                // Nach erfolgreichem Scan Hauptfenster laden
+                // SplashScreen 2 Sekunden anzeigen
+                await Task.Delay(2000);
+
+                if (CrawlerService.TryGetExistingDatabaseLastWriteTime(out DateTime lastUpdated))
+                {
+                    var dialog = new AskForRescanWindow(lastUpdated);
+
+                    desktop.MainWindow = dialog;
+                    dialog.Show();
+                    splashScreen.Close();
+
+                    bool shouldRescan = await dialog.WaitForResultAsync();
+
+                    if (shouldRescan)
+                    {
+                        CrawlerService.StartBackgroundScan();
+                    }
+                    else
+                    {
+                        CrawlerService.SkipInitialScan(lastUpdated);
+                    }
+                }
+                else
+                {
+                    splashScreen.UpdateStatus("Erstelle neuen Suchindex...");
+                    CrawlerService.StartBackgroundScan();
+                    await Task.Delay(500);
+
+                    // <--- GEÄNDERT: SplashScreen schließen, bevor MainWindow erscheint
+                    splashScreen.Close();
+                }
+
+                // Hauptfenster laden (Suche ist sofort nutzbar)
                 var mainWindow = new MainWindow();
                 desktop.MainWindow = mainWindow;
-                mainWindow.Show();
 
-                splashScreen.Close();
+                // Normales Beenden der App aktivieren, sobald das Hauptfenster geschlossen wird
+                desktop.ShutdownMode = ShutdownMode.OnMainWindowClose;
+
+                mainWindow.Show();
             }
             catch (Exception ex)
             {
                 splashScreen.Close();
 
-                var errorWindow = new Avalonia.Controls.Window
+                var errorWindow = new Window
                 {
                     Title = "Startfehler",
                     Width = 450,
                     Height = 180,
-                    Content = new Avalonia.Controls.TextBlock
+                    Content = new TextBlock
                     {
                         Text = $"Die Anwendung konnte nicht gestartet werden:\n{ex.Message}",
-                        Margin = new Avalonia.Thickness(20),
+                        Margin = new Thickness(20),
                         TextWrapping = Avalonia.Media.TextWrapping.Wrap
                     }
                 };
 
                 desktop.MainWindow = errorWindow;
+                desktop.ShutdownMode = ShutdownMode.OnMainWindowClose; 
                 errorWindow.Show();
-            }
-        }
-
-        private void StartCrawlerScan(SplashScreenWindow splashScreen)
-        {
-            try
-            {
-                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-                
-                string? currentDir = baseDir;
-                while (currentDir != null && !File.Exists(Path.Combine(currentDir, "PowerShell-Suchmaschine.sln")) && Path.GetFileName(currentDir) != "PowerShell-Suchmaschine")
-                {
-                    var parent = Directory.GetParent(currentDir);
-                    if (parent == null) break;
-                    currentDir = parent.FullName;
-                }
-
-                string projectRoot = currentDir ?? Path.GetFullPath(Path.Combine(baseDir, "../../../"));
-                string crawlerModulePath = Path.Combine(projectRoot, "src", "Crawler", "Crawler.psm1");
-
-                if (!File.Exists(crawlerModulePath))
-                {
-                    Console.WriteLine($"[FEHLER] Modul nicht gefunden unter: {crawlerModulePath}");
-                    return;
-                }
-
-                string scanFolder = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-
-                string escapedCrawlerModulePath = crawlerModulePath.Replace("'", "''");
-                string escapedScanFolder = scanFolder.Replace("'", "''");
-
-                string psCommand = $@"
-                    using module '{escapedCrawlerModulePath}'; 
-                    $c = [Crawler]::new(); 
-                    $c.ProgressOutput = $true; 
-                    $c.ProgressInterval = 100; 
-                    try {{ 
-                        $c.ScanFolder('{escapedScanFolder}') 
-                    }} 
-                    finally {{ 
-                        $c.Dispose() 
-                    }}";
-
-                var startInfo = new ProcessStartInfo
-                {
-                    FileName = "pwsh",
-                    Arguments = $"-NoProfile -NonInteractive -Command \"{psCommand}\"",
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                };
-
-                using var process = new Process { StartInfo = startInfo };
-
-                process.OutputDataReceived += (sender, e) =>
-                {
-                    if (string.IsNullOrWhiteSpace(e.Data)) return;
-
-                    if (e.Data.StartsWith("Scanned:"))
-                    {
-                        var match = Regex.Match(e.Data, @"Scanned:\s*(\d+)");
-                        if (match.Success)
-                        {
-                            string count = match.Groups[1].Value;
-                            splashScreen.UpdateStatus($"Dateien werden indiziert... ({count} verarbeitet)");
-                        }
-                    }
-                    else if (e.Data.StartsWith("Read:"))
-                    {
-                        var match = Regex.Match(e.Data, @"Read:\s*(\d+)\s*of\s*(\d+)");
-                        if (match.Success &&
-                            double.TryParse(match.Groups[1].Value, out double done) &&
-                            double.TryParse(match.Groups[2].Value, out double total))
-                        {
-                            if (total > 0)
-                            {
-                                double percent = (done / total) * 100;
-                                splashScreen.UpdateProgress(percent, isIndeterminate: false);
-                                splashScreen.UpdateStatus($"Dateiinhalte werden gelesen... ({done}/{total})");
-                            }
-                        }
-                    }
-                };
-
-                process.Start();
-                process.BeginOutputReadLine();
-                process.WaitForExit();
-
-                splashScreen.UpdateStatus("Fertiggestellt!");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Prozess-Fehler: {ex.Message}");
             }
         }
     }
