@@ -23,6 +23,15 @@
         <Style Selector="ListBoxItem">
             <Setter Property="Padding" Value="0"/>
         </Style>
+
+        <Style Selector="FlyoutPresenter.file-type-filter">
+            <Setter Property="Background" Value="#0c3835"/>
+            <Setter Property="Foreground" Value="#C9DDDC"/>
+            <Setter Property="BorderBrush" Value="#3F6B68"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="12"/>
+            <Setter Property="Padding" Value="14"/>
+        </Style>
     </Window.Styles>
 
     <Grid RowDefinitions="*,Auto">
@@ -79,19 +88,100 @@
                         Background="#001816"
                         Foreground="#8AABAA"
                         Padding="0"
+                        HorizontalContentAlignment="Center"
+                        VerticalContentAlignment="Center"
                         Margin="0,0,5,0"
-                        ToolTip.Tip="Suchfilter auswählen">
-                    <Image Source="avares://FileSearcherApp/GUIAssets/filterIcon.png"
-                           Width="20"
-                           Height="20"
-                           HorizontalAlignment="Center"
-                           VerticalAlignment="Center"/>
+                        ToolTip.Tip="Suchfilter"
+                        AutomationProperties.Name="Suchfilter">
+                    <PathIcon Width="20" Height="20" Foreground="#8AABAA"
+                              HorizontalAlignment="Center" VerticalAlignment="Center"
+                              Data="M2,5 H13 V7 H2 Z M16,5 H22 V7 H16 Z M13,3 H16 V9 H13 Z M2,11 H7 V13 H2 Z M10,11 H22 V13 H10 Z M7,9 H10 V15 H7 Z M2,17 H15 V19 H2 Z M18,17 H22 V19 H18 Z M15,15 H18 V21 H15 Z"/>
                     <Button.Flyout>
-                        <MenuFlyout>
-                            <MenuItem Header="Nach Name" Tag="FileName" Click="OnFilterMenuItemClick"/>
-                            <MenuItem Header="Nach Inhalt" Tag="Content" Click="OnFilterMenuItemClick"/>
-                            <MenuItem Header="Nach Beidem" Tag="Both" Click="OnFilterMenuItemClick"/>
-                        </MenuFlyout>
+                        <Flyout FlyoutPresenterClasses="file-type-filter" Opened="OnFilterFlyoutOpened">
+                            <StackPanel Width="280" Spacing="8">
+                                <StackPanel.Resources>
+                                    <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#164845"/>
+                                    <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#082624"/>
+                                    <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="#C9DDDC"/>
+                                    <SolidColorBrush x:Key="ButtonForegroundPressed" Color="#C9DDDC"/>
+                                    <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="#3F6B68"/>
+                                    <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="#8AABAA"/>
+                                    <SolidColorBrush x:Key="ComboBoxBackgroundPointerOver" Color="#164845"/>
+                                    <SolidColorBrush x:Key="ComboBoxBackgroundPressed" Color="#082624"/>
+                                    <SolidColorBrush x:Key="ComboBoxDropDownBackground" Color="#082624"/>
+                                    <SolidColorBrush x:Key="ComboBoxDropDownBorderBrush" Color="#3F6B68"/>
+                                    <SolidColorBrush x:Key="ComboBoxDropDownGlyphForeground" Color="#8AABAA"/>
+                                    <SolidColorBrush x:Key="ComboBoxItemBackgroundPointerOver" Color="#164845"/>
+                                    <SolidColorBrush x:Key="ComboBoxItemForegroundPointerOver" Color="#C9DDDC"/>
+                                    <SolidColorBrush x:Key="TextControlBackgroundPointerOver" Color="#082624"/>
+                                    <SolidColorBrush x:Key="TextControlBackgroundFocused" Color="#001816"/>
+                                    <SolidColorBrush x:Key="TextControlBorderBrushFocused" Color="#8AABAA"/>
+                                    <SolidColorBrush x:Key="TextControlForegroundFocused" Color="#C9DDDC"/>
+                                    <SolidColorBrush x:Key="TextControlPlaceholderForeground" Color="#8AABAA"/>
+                                    <SolidColorBrush x:Key="TextControlPlaceholderForegroundFocused" Color="#8AABAA"/>
+                                    <SolidColorBrush x:Key="TextControlPlaceholderForegroundPointerOver" Color="#8AABAA"/>
+                                </StackPanel.Resources>
+                                <StackPanel.Styles>
+                                    <Style Selector="Button">
+                                        <Setter Property="Background" Value="#001816"/>
+                                        <Setter Property="Foreground" Value="#C9DDDC"/>
+                                        <Setter Property="BorderBrush" Value="#3F6B68"/>
+                                        <Setter Property="BorderThickness" Value="1"/>
+                                        <Setter Property="CornerRadius" Value="10"/>
+                                    </Style>
+                                    <Style Selector="TextBox, ComboBox">
+                                        <Setter Property="Background" Value="#001816"/>
+                                        <Setter Property="Foreground" Value="#C9DDDC"/>
+                                        <Setter Property="BorderBrush" Value="#3F6B68"/>
+                                        <Setter Property="CornerRadius" Value="8"/>
+                                    </Style>
+                                    <Style Selector="ComboBoxItem">
+                                        <Setter Property="Foreground" Value="#C9DDDC"/>
+                                    </Style>
+                                </StackPanel.Styles>
+                                <TextBlock Text="Dateitypen" FontWeight="Bold"/>
+                                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
+                                    <TextBox x:Name="FileTypeBox"
+                                             Watermark="z. B. pdf, docx"
+                                             CaretBrush="#C9DDDC"
+                                             AutomationProperties.Name="Dateiendungen"
+                                             KeyDown="OnFileTypeKeyDown"/>
+                                    <Button Grid.Column="1" Content="Hinzufügen" Click="OnAddFileTypesClick"
+                                            VerticalAlignment="Stretch"/>
+                                </Grid>
+                                <TextBlock x:Name="FileTypeErrorText" IsVisible="False" TextWrapping="Wrap"/>
+                                <ScrollViewer MaxHeight="160" VerticalScrollBarVisibility="Auto"
+                                              HorizontalScrollBarVisibility="Disabled">
+                                    <ItemsControl x:Name="FileTypeList">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate x:DataType="x:String">
+                                                <Grid ColumnDefinitions="*,Auto" Margin="0,2">
+                                                    <TextBlock Text="{Binding .}" TextTrimming="CharacterEllipsis"
+                                                               VerticalAlignment="Center"/>
+                                                    <Button Grid.Column="1" Click="OnRemoveFileTypeClick"
+                                                            Width="32" Height="32" Padding="0"
+                                                            HorizontalContentAlignment="Center"
+                                                            VerticalContentAlignment="Center"
+                                                            ToolTip.Tip="Dateityp entfernen"
+                                                            AutomationProperties.Name="{Binding ., StringFormat='Dateityp {0} entfernen'}">
+                                                        <PathIcon Width="14" Height="14" Foreground="#8AABAA"
+                                                                  HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                                  Data="M9,3 H15 V5 H20 V7 H4 V5 H9 Z M6,9 H18 L17,21 H7 Z"/>
+                                                    </Button>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                                <ComboBox HorizontalAlignment="Stretch" SelectedIndex="0"
+                                          AutomationProperties.Name="Suchbereich"
+                                          SelectionChanged="OnSearchModeChanged">
+                                    <ComboBoxItem Content="Nach Name" Tag="FileName"/>
+                                    <ComboBoxItem Content="Nach Inhalt" Tag="Content"/>
+                                    <ComboBoxItem Content="Nach Name und Inhalt" Tag="Both"/>
+                                </ComboBox>
+                            </StackPanel>
+                        </Flyout>
                     </Button.Flyout>
                 </Button>
 

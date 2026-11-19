@@ -2,6 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using Avalonia.Controls;
@@ -12,12 +13,10 @@ namespace FileSearcherApp
 {
     public partial class MainWindow : Window
     {
-        private const int DebounceMs = 500;   // Pause nach der letzten Eingabe
-        private const int MinChars = 2;       // kürzere Eingaben suchen wir nicht automatisch
-        private CancellationTokenSource? _cts;   // gehört zur jeweils neuesten Eingabe
-    
+        private CancellationTokenSource? _cts;
+        private readonly ObservableCollection<string> _fileTypes = new();
+
         private ISearchService? _search;
-        private bool _isSearching;
         private bool _windowLoaded;
 
         private string _currentSearchMode = "FileName";
@@ -26,6 +25,8 @@ namespace FileSearcherApp
         public MainWindow()
         {
             InitializeComponent();
+            FileTypeList.ItemsSource = _fileTypes;
+            Closed += (_, _) => _cts?.Cancel();
 
             string username = Environment.UserName;
             WelcomeText.Text = $"Hallo {username}!";
@@ -104,17 +105,73 @@ namespace FileSearcherApp
         }
         // =========================================================================
 
-        private void OnFilterMenuItemClick(
-            object? sender,
-            RoutedEventArgs e)
+        private void OnFilterFlyoutOpened(object? sender, EventArgs e)
         {
-            if (sender is MenuItem menuItem &&
-                menuItem.Tag is string filterMode)
+            FileTypeBox.Focus();
+        }
+
+        private void OnFileTypeKeyDown(object? sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter)
             {
-                _currentSearchMode = filterMode;
+                e.Handled = true;
+                AddFileTypes();
+            }
+        }
 
+        private void OnAddFileTypesClick(object? sender, RoutedEventArgs e)
+        {
+            AddFileTypes();
+            FileTypeBox.Focus();
+        }
+
+        private void AddFileTypes()
+        {
+            var input = FileTypeBox.Text ?? "";
+            var extensions = new List<string>();
+            foreach (var entry in input.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+            {
+                var extension = entry.StartsWith('.') ? entry[1..] : entry;
+                if (extension.Length == 0 ||
+                    extension.IndexOfAny(['.', '/', '\\']) >= 0 ||
+                    Array.Exists(extension.ToCharArray(), char.IsWhiteSpace))
+                {
+                    FileTypeErrorText.Text = $"Ungültige Dateiendung: {entry}";
+                    FileTypeErrorText.IsVisible = true;
+                    return;
+                }
+
+                var normalized = "." + extension.ToLowerInvariant();
+                if (!_fileTypes.Contains(normalized) && !extensions.Contains(normalized))
+                    extensions.Add(normalized);
+            }
+
+            FileTypeBox.Clear();
+            FileTypeErrorText.IsVisible = false;
+            foreach (var extension in extensions)
+                _fileTypes.Add(extension);
+            if (extensions.Count > 0)
+                ApplyFileTypeFilter();
+        }
+
+        private void OnRemoveFileTypeClick(object? sender, RoutedEventArgs e)
+        {
+            if (sender is Button { DataContext: string extension } && _fileTypes.Remove(extension))
+                ApplyFileTypeFilter();
+        }
+
+        private void ApplyFileTypeFilter()
+        {
+            if (!string.IsNullOrWhiteSpace(SearchBox.Text))
+                PerformSearch();
+        }
+
+        private void OnSearchModeChanged(object? sender, SelectionChangedEventArgs e)
+        {
+            if (_windowLoaded && sender is ComboBox { SelectedItem: ComboBoxItem { Tag: string mode } })
+            {
+                _currentSearchMode = mode;
                 UpdateSearchWatermark();
-
                 PerformSearch();
             }
         }
@@ -186,7 +243,7 @@ namespace FileSearcherApp
         });
     }
     catch (Exception ex)
-        {
+    {
             ResultsCountText.Text = "Datei konnte nicht geöffnet werden.";
             ResultsCountText.SetValue(ToolTip.TipProperty, ex.Message);
         }
@@ -194,10 +251,12 @@ namespace FileSearcherApp
 
         private async void PerformSearch()
         {
-            if (!_windowLoaded || _isSearching)
+            if (!_windowLoaded)
                 return;
 
-            _isSearching = true;
+            _cts?.Cancel();
+            using var searchCancellation = new CancellationTokenSource();
+            _cts = searchCancellation;
 
             try
             {
@@ -214,14 +273,14 @@ namespace FileSearcherApp
 
                 _search ??= SearchBridge.CreateDefault();
 
-                int limit = SearchLimit;
-                string? extension = null;
-
                 var hits = await _search.SearchAsync(
                     query,
-                    limit,
-                    extension,
-                    _currentSearchMode);
+                    SearchLimit,
+                    mode: _currentSearchMode,
+                    ct: searchCancellation.Token,
+                    extensions: new List<string>(_fileTypes));
+
+                searchCancellation.Token.ThrowIfCancellationRequested();
 
                 if (hits == null || hits.Count == 0)
                 {
@@ -236,15 +295,20 @@ namespace FileSearcherApp
                     ResultsList.Items.Add(hit);
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) when (!searchCancellation.IsCancellationRequested)
             {
                 SetCount(0);
                 ResultsList.Items.Clear();
                 ResultsList.Items.Add($"Fehler: {ex.Message}");
             }
+            catch (Exception) when (searchCancellation.IsCancellationRequested)
+            {
+                // Eine neuere Suche oder das Schließen des Fensters hat diese Suche abgelöst.
+            }
             finally
             {
-                _isSearching = false;
+                if (ReferenceEquals(_cts, searchCancellation))
+                    _cts = null;
             }
         }
     }
