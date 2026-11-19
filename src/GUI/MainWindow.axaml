@@ -125,10 +125,19 @@
                     BorderThickness="0,0,0,1"
                     Padding="12,6,28,6">
                 <Grid ColumnDefinitions="2*,60,130,3*" ColumnSpacing="12">
-                    <TextBlock Grid.Column="0" Text="Datei"    FontWeight="Bold" Foreground="#8AABAA"/>
-                    <TextBlock Grid.Column="1" Text="Typ"      FontWeight="Bold" Foreground="#8AABAA"/>
-                    <TextBlock Grid.Column="2" Text="Geändert" FontWeight="Bold" Foreground="#8AABAA"/>
-                    <TextBlock Grid.Column="3" Text="Pfad"     FontWeight="Bold" Foreground="#8AABAA"/>
+                    <TextBlock Grid.Column="0" x:Name="SortNameHeader" Text="Datei" Tag="Name"
+                            FontWeight="Bold" Foreground="#8AABAA"
+                            Background="Transparent" Cursor="Hand"
+                            Tapped="OnSortHeaderTapped"/>
+                    <TextBlock Grid.Column="1" x:Name="SortTypeHeader" Text="Typ" Tag="Type"
+                            FontWeight="Bold" Foreground="#8AABAA"
+                            Background="Transparent" Cursor="Hand"
+                            Tapped="OnSortHeaderTapped"/>
+                    <TextBlock Grid.Column="2" x:Name="SortDateHeader" Text="Geändert" Tag="Date"
+                            FontWeight="Bold" Foreground="#8AABAA"
+                            Background="Transparent" Cursor="Hand"
+                            Tapped="OnSortHeaderTapped"/>
+                    <TextBlock Grid.Column="3" Text="Pfad" FontWeight="Bold" Foreground="#8AABAA"/>
                 </Grid>
             </Border>
 
