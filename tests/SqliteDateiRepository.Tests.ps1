@@ -353,6 +353,117 @@ Describe "SqliteDateiRepository" {
         @(Search-Query -Database $script:database -Query 'marker' -Literal -SearchMode Content) | Should -HaveCount 1
     }
 
+    It "supports included and excluded extension lists and returns indexed extensions" {
+        $textFile = New-TestDatei -Path (Join-Path $script:testRoot "report.txt")
+        $pdfFile = New-TestDatei -Path (Join-Path $script:testRoot "report.pdf")
+        $wordFile = New-TestDatei -Path (Join-Path $script:testRoot "report.docx")
+        foreach ($file in @($textFile, $pdfFile, $wordFile)) {
+            $file.Content = "extensionlistmarker"
+        }
+        $script:database.SaveBatch([Datei[]]@($textFile, $pdfFile, $wordFile))
+
+        (Get-SearchExtensions -Database $script:database) |
+            Should -Be @(".docx", ".pdf", ".txt")
+        $results = @(
+            Search-Query -Database $script:database -Query "extensionlistmarker" `
+                -IncludeExtensions @("TXT", "pdf") -ExcludeExtensions @(".PDF")
+        )
+        $results | Should -HaveCount 1
+        $results[0].File.Extension | Should -Be ".txt"
+
+        $results = @(
+            Search-Query -Database $script:database -Query "extensionlistmarker" `
+                -ExcludeExtensions @("txt", "docx")
+        )
+        $results | Should -HaveCount 1
+        $results[0].File.Extension | Should -Be ".pdf"
+    }
+
+    It "applies extension filters to literal searches" {
+        $textFile = New-TestDatei -Path (Join-Path $script:testRoot "literal.txt")
+        $pdfFile = New-TestDatei -Path (Join-Path $script:testRoot "literal.pdf")
+        $script:database.SaveBatch([Datei[]]@($textFile, $pdfFile))
+
+        $results = @(
+            Search-Query -Database $script:database -Query "." `
+                -Literal -IncludeExtensions @("txt", "pdf") `
+                -ExcludeExtensions @("PDF") -SearchMode FileName
+        )
+
+        $results | Should -HaveCount 1
+        $results[0].File.Extension | Should -Be ".txt"
+    }
+
+    It "combines extension filters with term operators and pagination" {
+        $textFile = New-TestDatei -Path (Join-Path $script:testRoot "terms.txt")
+        $textFile.Content = "blue sharedmarker"
+        $firstPdf = New-TestDatei -Path (Join-Path $script:testRoot "terms-first.pdf")
+        $firstPdf.Content = "blue sharedmarker"
+        $secondPdf = New-TestDatei -Path (Join-Path $script:testRoot "terms-second.pdf")
+        $secondPdf.Content = "red sharedmarker"
+        $wordFile = New-TestDatei -Path (Join-Path $script:testRoot "terms.docx")
+        $wordFile.Content = "blue red sharedmarker"
+        $script:database.SaveBatch([Datei[]]@($textFile, $firstPdf, $secondPdf, $wordFile))
+
+        $firstPage = @(
+            Search-Query -Database $script:database -Query "blue red" `
+                -SearchMode Content -MatchMode Or -IncludeExtensions @("txt", "pdf") `
+                -ExcludeExtensions @("TXT") -Limit 1 -Offset 0
+        )
+        $secondPage = @(
+            Search-Query -Database $script:database -Query "blue red" `
+                -SearchMode Content -MatchMode Or -IncludeExtensions @("txt", "pdf") `
+                -ExcludeExtensions @("TXT") -Limit 1 -Offset 1
+        )
+        $allResults = @(
+            Search-Query -Database $script:database -Query "blue red" `
+                -SearchMode Content -MatchMode Or -IncludeExtensions @("txt", "pdf") `
+                -ExcludeExtensions @("TXT") -Limit 10
+        )
+        $andResults = @(
+            Search-Query -Database $script:database -Query "blue red" `
+                -SearchMode Content -MatchMode And -IncludeExtensions @("txt", "pdf") `
+                -ExcludeExtensions @("TXT")
+        )
+
+        $allResults | Should -HaveCount 2
+        $firstPage | Should -HaveCount 1
+        $firstPage[0].File.Path | Should -Be $allResults[0].File.Path
+        $secondPage | Should -HaveCount 1
+        $secondPage[0].File.Path | Should -Be $allResults[1].File.Path
+        $allResults[0].File.Extension | Should -Be ".pdf"
+        $allResults[1].File.Extension | Should -Be ".pdf"
+        @($allResults.File.Path | Select-Object -Unique) | Should -HaveCount 2
+        $andResults | Should -BeNullOrEmpty
+
+        $textContentHit = New-TestDatei -Path (Join-Path $script:testRoot "literalpage-first.txt")
+        $textContentHit.Content = "literalpage"
+        $pdfContentHit = New-TestDatei -Path (Join-Path $script:testRoot "literalpage-second.pdf")
+        $pdfContentHit.Content = "literalpage"
+        $pdfNameHit = New-TestDatei -Path (Join-Path $script:testRoot "literalpage-third.pdf")
+        $pdfNameHit.Content = "unrelated"
+        $script:database.SaveBatch([Datei[]]@($textContentHit, $pdfContentHit, $pdfNameHit))
+
+        $literalPage = @(
+            Search-Query -Database $script:database -Query "literalpage" -Literal `
+                -IncludeExtensions @("pdf") -ExcludeExtensions @("txt") `
+                -Limit 1 -Offset 1
+        )
+        $literalPage | Should -HaveCount 1
+        $literalPage[0].File.Path | Should -Be $pdfNameHit.Path
+    }
+
+    It "searches hyphenated words as adjacent indexed tokens" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot "state-of-the-art.txt")
+        $file.Content = "A state-of-the-art search marker."
+        $script:database.Save($file)
+
+        $results = @(Search-Query -Database $script:database -Query "state-of-the-art")
+
+        $results | Should -HaveCount 1
+        $results[0].File.Path | Should -Be $file.Path
+    }
+
     It "returns no results for blank queries and unmatched terms" {
         $file = New-TestDatei -Path (Join-Path $script:testRoot "notes.txt")
         $script:database.Save($file)

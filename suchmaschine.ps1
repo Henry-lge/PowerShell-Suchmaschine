@@ -32,7 +32,13 @@ param(
 
     # Seite der Suchergebnisse (0 = erste Seite).
     [ValidateRange(0, 2147483647)]
-    [int]$Offset = 0
+    [int]$Offset = 0,
+
+    # Optional erlaubte Dateiendungen.
+    [string[]]$IncludeExtensions = @(),
+
+    # Optional ausgeschlossene Dateiendungen.
+    [string[]]$ExcludeExtensions = @()
 )
 
 # Der Crawler öffnet die Datenbank unter DatabasePath selbst. Nur so kann er
@@ -98,7 +104,9 @@ try {
         $results = @(
             Search-Query -Database $crawler.Repository -Query $Query `
                 -Limit $SearchLimit -SearchMode $SearchMode `
-                -MatchMode $MatchMode -Offset $Offset
+                -MatchMode $MatchMode -Offset $Offset `
+                -IncludeExtensions $IncludeExtensions `
+                -ExcludeExtensions $ExcludeExtensions
         )
         if ($results.Count -eq 0) {
             # Klammern nötig: -f bindet stärker als +, sonst würde nur der
