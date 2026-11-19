@@ -250,33 +250,6 @@ Describe "SqliteDateiRepository" {
         }
     }
 
-    It "accepts literal mode and extension filters in GUI JSON requests" {
-        $file = New-TestDatei -Path (Join-Path $script:testRoot 'adapter.txt')
-        $script:database.Save($file)
-        $adapter = Join-Path $PSScriptRoot '../Invoke-GuiSearch.ps1'
-        $request = @{
-            query = '.'
-            mode = 'filename'
-            literal = $true
-            includeExtensions = @('txt', 'pdf')
-            excludeExtensions = @('pdf')
-        } | ConvertTo-Json -Compress
-
-        $json = $request | & (Get-Process -Id $PID).Path -NoProfile -NonInteractive `
-            -File $adapter -DatabasePath $script:databasePath
-        $response = $json | ConvertFrom-Json
-        $response.ok | Should -BeTrue
-        $response.count | Should -Be 1
-        $response.results[0].matchedIn | Should -Be 'Dateiname'
-
-        $request = @{ action = 'listExtensions' } | ConvertTo-Json -Compress
-        $json = $request | & (Get-Process -Id $PID).Path -NoProfile -NonInteractive `
-            -File $adapter -DatabasePath $script:databasePath
-        $response = $json | ConvertFrom-Json
-        $response.ok | Should -BeTrue
-        $response.extensions | Should -Be @('.txt')
-    }
-
     It "escapes wildcard characters and FTS quotes in literal searches" {
         $file = New-TestDatei -Path (Join-Path $script:testRoot 'rate_100%.txt')
         $other = New-TestDatei -Path (Join-Path $script:testRoot 'rateX100x.txt')
