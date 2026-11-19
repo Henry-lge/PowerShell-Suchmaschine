@@ -1,4 +1,6 @@
 <Window xmlns="https://github.com/avaloniaui"
+        MinWidth="650"
+        MinHeight="450"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="using:FileSearcherApp"
         x:Class="FileSearcherApp.MainWindow"
@@ -9,7 +11,7 @@
         Height="450"
         Icon="avares://FileSearcherApp/GUIAssets/icon.png"
         Background="#0c3835">
-
+    
     <Window.Styles>
         <Style Selector="ToolTip">
             <Setter Property="Background" Value="#001816"/>
@@ -181,7 +183,7 @@
                                     <Separator/>
                                     <TextBlock Text="{Binding Path}" Opacity="0.7" TextWrapping="Wrap" FontSize="11"/>
                                     <TextBlock Text="{Binding LastWriteText}" Opacity="0.7" FontSize="11"/>
-                                </StackPanel>
+    </StackPanel>
                             </ToolTip.Tip>
 
                             <Grid ColumnDefinitions="2*,60,130,3*" ColumnSpacing="12">
