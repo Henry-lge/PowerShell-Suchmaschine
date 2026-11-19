@@ -25,11 +25,10 @@ namespace FileSearcherApp
         public MainWindow()
         {
             InitializeComponent();
+
             FileTypeList.ItemsSource = _fileTypes;
             Closed += (_, _) => _cts?.Cancel();
-
-            string username = Environment.UserName;
-            WelcomeText.Text = $"Hallo {username}!";
+            InitializeAppearance();
 
             // Erst nach dem Laden auf Ereignisse reagieren.
             _windowLoaded = true;
@@ -219,35 +218,35 @@ namespace FileSearcherApp
         }
 
         private void OnSearchHitTapped(object? sender, TappedEventArgs e)
-{
-    if (sender is not Border border ||
-        border.DataContext is not SearchHit hit)
-    {
-        return;
-    }
-
-    e.Handled = true;
-
-    if (!File.Exists(hit.Path))
-    {
-        ResultsCountText.Text = "Datei nicht mehr vorhanden.";
-        return;
-    }
-
-    try
-    {
-        Process.Start(new ProcessStartInfo
         {
-            FileName = hit.Path,
-            UseShellExecute = true
-        });
-    }
-    catch (Exception ex)
-    {
-            ResultsCountText.Text = "Datei konnte nicht geöffnet werden.";
-            ResultsCountText.SetValue(ToolTip.TipProperty, ex.Message);
+            if (sender is not Border border ||
+                border.DataContext is not SearchHit hit)
+            {
+                return;
+            }
+
+            e.Handled = true;
+
+            if (!File.Exists(hit.Path))
+            {
+                ResultsCountText.Text = "Datei nicht mehr vorhanden.";
+                return;
+            }
+
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = hit.Path,
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                ResultsCountText.Text = "Datei konnte nicht geöffnet werden.";
+                ResultsCountText.SetValue(ToolTip.TipProperty, ex.Message);
+            }
         }
-    }
 
         private async void PerformSearch()
         {

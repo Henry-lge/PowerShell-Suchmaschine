@@ -1,0 +1,149 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="FileSearcherApp.AppearanceWindow"
+        Title="Optionen"
+        Width="640" Height="532"
+        MinWidth="600" MinHeight="464"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource ThemePrimaryBrush}"
+        Foreground="{DynamicResource ThemeTextBrush}">
+
+    <Window.Styles>
+        <Style Selector="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextBrush}"/>
+        </Style>
+        <Style Selector="Button">
+            <Setter Property="Background" Value="{DynamicResource ThemeSecondaryBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeBorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="10"/>
+            <Setter Property="MinHeight" Value="38"/>
+        </Style>
+        <Style Selector="Button.color-row">
+            <Setter Property="MinHeight" Value="48"/>
+            <Setter Property="Padding" Value="12,8"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+        <Style Selector="Button.color-row.selected">
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeTextBrush}"/>
+        </Style>
+        <Style Selector="TextBox, ComboBox">
+            <Setter Property="Background" Value="{DynamicResource ThemeSecondaryBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeBorderBrush}"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="MinHeight" Value="38"/>
+        </Style>
+        <Style Selector="TextBox">
+            <Setter Property="CaretBrush" Value="{DynamicResource ThemeTextBrush}"/>
+        </Style>
+        <Style Selector="Border.swatch">
+            <Setter Property="Height" Value="24"/>
+            <Setter Property="CornerRadius" Value="5"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeBorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+        </Style>
+    </Window.Styles>
+
+    <Grid RowDefinitions="Auto,*,Auto,Auto" Margin="22" RowSpacing="14">
+        <TextBlock Text="Erscheinungsbild" FontSize="21" FontWeight="Bold"/>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled">
+            <Grid ColumnDefinitions="*,1.2*" ColumnSpacing="20">
+                <StackPanel Spacing="12">
+                    <StackPanel Spacing="6">
+                        <Button x:Name="PrimaryColorRow" Classes="color-row"
+                                AutomationProperties.Name="Primärfarbe" Click="OnColorRowClick">
+                            <Grid ColumnDefinitions="28,*" ColumnSpacing="10">
+                                <Border Classes="swatch" Background="{DynamicResource ThemePrimaryBrush}"/>
+                                <TextBlock Grid.Column="1" Text="Primärfarbe" VerticalAlignment="Center"/>
+                            </Grid>
+                        </Button>
+                        <Button x:Name="SecondaryColorRow" Classes="color-row"
+                                AutomationProperties.Name="Sekundärfarbe" Click="OnColorRowClick">
+                            <Grid ColumnDefinitions="28,*" ColumnSpacing="10">
+                                <Border Classes="swatch" Background="{DynamicResource ThemeSecondaryBrush}"/>
+                                <TextBlock Grid.Column="1" Text="Sekundärfarbe" VerticalAlignment="Center"/>
+                            </Grid>
+                        </Button>
+                        <Button x:Name="TextColorRow" Classes="color-row"
+                                AutomationProperties.Name="Schriftfarbe" Click="OnColorRowClick">
+                            <Grid ColumnDefinitions="28,*" ColumnSpacing="10">
+                                <Border Classes="swatch" Background="{DynamicResource ThemeTextBrush}"/>
+                                <TextBlock Grid.Column="1" Text="Schriftfarbe" VerticalAlignment="Center"/>
+                            </Grid>
+                        </Button>
+                    </StackPanel>
+
+                    <StackPanel Spacing="5">
+                        <TextBlock Text="Schriftart"/>
+                        <ComboBox x:Name="FontBox" HorizontalAlignment="Stretch"
+                                  AutomationProperties.Name="Schriftart"
+                                  SelectionChanged="OnFontChanged"/>
+                    </StackPanel>
+                    <StackPanel Spacing="5">
+                        <TextBlock Text="Name in der Begrüßung"/>
+                        <TextBox x:Name="GreetingNameBox" MaxLength="80"
+                                 AutomationProperties.Name="Name in der Begrüßung"
+                                 TextChanged="OnGreetingNameChanged"/>
+                    </StackPanel>
+                </StackPanel>
+
+                <Border Grid.Column="1" VerticalAlignment="Top" Padding="12" CornerRadius="12"
+                        Background="{DynamicResource ThemeSecondaryBrush}"
+                        BorderBrush="{DynamicResource ThemeBorderBrush}" BorderThickness="1">
+                    <StackPanel Spacing="8">
+                        <TextBlock x:Name="ColorTitle" Text="Primärfarbe" FontWeight="Bold"/>
+                        <Border x:Name="WheelSurface" Width="220" Height="220"
+                                Background="Transparent" HorizontalAlignment="Center"
+                                Focusable="True" Cursor="Cross"
+                                AutomationProperties.Name="Farbrad. Pfeiltasten ändern Farbton und Sättigung."
+                                KeyDown="OnWheelKeyDown"
+                                PointerPressed="OnWheelPressed" PointerMoved="OnWheelMoved"
+                                PointerReleased="OnWheelReleased">
+                            <Grid IsHitTestVisible="False">
+                                <Image x:Name="WheelImage" Stretch="Fill"/>
+                                <Canvas>
+                                    <Ellipse x:Name="WheelMarker" Width="16" Height="16"
+                                             Fill="Transparent" Stroke="#101818" StrokeThickness="4"/>
+                                    <Ellipse x:Name="WheelMarkerOutline" Width="16" Height="16"
+                                             Fill="Transparent" Stroke="White" StrokeThickness="2"/>
+                                </Canvas>
+                            </Grid>
+                        </Border>
+
+                        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+                            <TextBlock Text="Helligkeit" VerticalAlignment="Center"/>
+                            <Slider Grid.Column="1" x:Name="BrightnessSlider" Minimum="0" Maximum="1"
+                                    SmallChange="0.01" LargeChange="0.1"
+                                    AutomationProperties.Name="Helligkeit" ValueChanged="OnBrightnessChanged"/>
+                        </Grid>
+                        <Grid ColumnDefinitions="*,36,100" ColumnSpacing="8">
+                            <TextBlock Text="Hex-Farbwert" VerticalAlignment="Center"/>
+                            <Border Grid.Column="1" x:Name="ColorPreview" Classes="swatch"
+                                    VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="2" x:Name="HexColorBox" MaxLength="7"
+                                     AutomationProperties.Name="Hex-Farbwert" TextChanged="OnHexChanged"/>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </ScrollViewer>
+
+        <Grid Grid.Row="2" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+            <TextBlock x:Name="OptionsMessage" VerticalAlignment="Center" TextWrapping="Wrap"/>
+            <Button Grid.Column="1" Content="Abbrechen" Click="OnCancelClick"/>
+            <Button Grid.Column="2" Content="Übernehmen" Click="OnSaveClick"/>
+        </Grid>
+
+        <Border Grid.Row="3" BorderBrush="{DynamicResource ThemeBorderBrush}"
+                BorderThickness="0,1,0,0" Padding="0,10,0,0">
+            <TextBlock Text="Die GUI ist Schuld" Opacity="0.7"/>
+        </Border>
+    </Grid>
+</Window>

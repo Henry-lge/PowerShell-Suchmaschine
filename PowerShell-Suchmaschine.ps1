@@ -1,4 +1,3 @@
-
 Set-Location $PSScriptRoot
 
 # Fehlerdialog für alle Plattformen
