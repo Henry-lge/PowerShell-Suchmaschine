@@ -167,14 +167,12 @@
 
                                     <!-- Vorschaubild (nur bei Bilddateien sichtbar) -->
                                     <Image Source="{Binding Path, Converter={x:Static local:ThumbnailConverter.Instance}}"
-                                           IsVisible="{Binding $self.Source, Converter={x:Static ObjectConverters.IsNotNull}}"
                                            MaxWidth="320"
                                            MaxHeight="200"
                                            Stretch="Uniform"
                                            HorizontalAlignment="Left"/>
 
                                     <TextBlock Inlines="{Binding Preview, Converter={x:Static local:HighlightConverter.Instance}}"
-                                               IsVisible="{Binding Path, Converter={x:Static local:FileTypeConverters.IsNotImage}}"
                                                TextWrapping="Wrap"
                                                MaxHeight="220"
                                                TextTrimming="CharacterEllipsis"/>
