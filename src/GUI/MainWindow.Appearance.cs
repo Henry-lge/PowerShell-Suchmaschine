@@ -13,9 +13,6 @@ namespace FileSearcherApp
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "FileSearcherApp", "appearance.json");
 
-        private static readonly AppearancePreferences DefaultAppearance =
-            new("#0C3835", "#001816", "#C9DDDC", Environment.UserName);
-
         private readonly SolidColorBrush _primaryBrush = new();
         private readonly SolidColorBrush _secondaryBrush = new();
         private readonly SolidColorBrush _textBrush = new();
@@ -24,7 +21,7 @@ namespace FileSearcherApp
         private readonly SolidColorBrush _hoverBrush = new();
         private readonly SolidColorBrush _borderBrush = new();
 
-        private AppearancePreferences _appearance = DefaultAppearance;
+        private AppearancePreferences _appearance = AppearancePreferences.Default;
 
         private void InitializeAppearance()
         {
@@ -89,8 +86,8 @@ namespace FileSearcherApp
             _primaryBrush.Color = primary;
             _secondaryBrush.Color = secondary;
             _textBrush.Color = text;
-            _iconBrush.Color = appearance.PrimaryColor == DefaultAppearance.PrimaryColor &&
-                appearance.TextColor == DefaultAppearance.TextColor
+            _iconBrush.Color = appearance.PrimaryColor == AppearancePreferences.Default.PrimaryColor &&
+                appearance.TextColor == AppearancePreferences.Default.TextColor
                 ? Color.FromRgb(138, 171, 170)
                 : Mix(text, primary, 0.32);
             _borderBrush.Color = Mix(primary, text, 0.28);
@@ -122,10 +119,10 @@ namespace FileSearcherApp
                     if (saved is not null)
                     {
                         return new AppearancePreferences(
-                            AppearancePreferences.TryNormalizeColor(saved.PrimaryColor, out var primary) ? primary : DefaultAppearance.PrimaryColor,
-                            AppearancePreferences.TryNormalizeColor(saved.SecondaryColor, out var secondary) ? secondary : DefaultAppearance.SecondaryColor,
-                            AppearancePreferences.TryNormalizeColor(saved.TextColor, out var text) ? text : DefaultAppearance.TextColor,
-                            saved.GreetingName?.Trim() ?? DefaultAppearance.GreetingName,
+                            AppearancePreferences.TryNormalizeColor(saved.PrimaryColor, out var primary) ? primary : AppearancePreferences.Default.PrimaryColor,
+                            AppearancePreferences.TryNormalizeColor(saved.SecondaryColor, out var secondary) ? secondary : AppearancePreferences.Default.SecondaryColor,
+                            AppearancePreferences.TryNormalizeColor(saved.TextColor, out var text) ? text : AppearancePreferences.Default.TextColor,
+                            saved.GreetingName?.Trim() ?? AppearancePreferences.Default.GreetingName,
                             saved.FontName?.Trim());
                     }
                 }
@@ -135,7 +132,7 @@ namespace FileSearcherApp
                 // Die Oberfläche kann auch mit einer unlesbaren Einstellungsdatei starten.
             }
 
-            return DefaultAppearance;
+            return AppearancePreferences.Default;
         }
 
         private static void SaveAppearance(AppearancePreferences appearance)
@@ -159,6 +156,9 @@ namespace FileSearcherApp
         string PrimaryColor, string SecondaryColor, string TextColor, string GreetingName,
         string? FontName = null)
     {
+        internal static AppearancePreferences Default { get; } =
+            new("#0C3835", "#001816", "#C9DDDC", Environment.UserName);
+
         internal static bool TryNormalizeColor(string? input, out string normalized)
         {
             normalized = "";

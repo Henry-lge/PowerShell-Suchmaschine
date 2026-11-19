@@ -248,6 +248,20 @@ namespace FileSearcherApp
             }
         }
 
+        private void OnResetClick(object? sender, RoutedEventArgs e)
+        {
+            _draft = AppearancePreferences.Default with
+            {
+                GreetingName = GreetingNameBox.Text?.Trim() ?? ""
+            };
+
+            _ready = false;
+            FontBox.SelectedIndex = 0;
+            _ready = true;
+            SelectColorRow(_activeRow ?? PrimaryColorRow);
+            PreviewAppearance();
+        }
+
         private void OnCancelClick(object? sender, RoutedEventArgs e) => Close();
 
         private static string ToHex(Color color) => $"#{color.R:X2}{color.G:X2}{color.B:X2}";
