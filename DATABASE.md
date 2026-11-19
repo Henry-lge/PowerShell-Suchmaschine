@@ -1054,8 +1054,8 @@ sequenceDiagram
     participant Repo as SqliteDateiRepository
     participant FTS as files_fts
     participant Meta as files_metadata
-    Caller->>Query: Query, Limit, Extension, SearchMode
-    Query->>Repo: Search(Query, Limit, Extension, SearchMode)
+    Caller->>Query: Query, Limit, Extension, SearchMode, MatchMode, Offset
+    Query->>Repo: Search(Query, Limit, Extension, SearchMode, MatchMode, Offset)
     Repo->>Repo: Suchparameter und Limit validieren
     Repo->>FTS: FTS5-MATCH im gewählten Suchbereich
     Repo->>FTS: Rang und passenden Snippet berechnen
@@ -1066,8 +1066,19 @@ sequenceDiagram
 ```
 
 Ein leerer Suchtext liefert keine Treffer. Das Limit ist auf 1 bis 1000
-begrenzt; der Dateiendungsfilter ist optional. `SearchMode` ist `FileName`,
-`Content` oder `Both` und standardmäßig `Both`.
+begrenzt; `Offset` ist nullbasiert und standardmäßig 0. So lassen sich etwa
+mit `-Limit 100 -Offset 0`, danach `-Offset 100` und `-Offset 200` weitere
+Ergebnisseiten abrufen. Eine stabile Sortierung macht die Seiten bei gleichen
+Relevanzwerten reproduzierbar.
+
+Mit `-MatchMode And` müssen alle durch Leerzeichen getrennten Begriffe
+vorkommen; `-MatchMode Or` liefert Treffer, die mindestens einen Begriff
+enthalten. Begriffe in doppelten Anführungszeichen bleiben eine zusammenhängende
+Phrase, etwa `-Query '"blue comet" red'`. Die Suchbegriffe werden als FTS5-Literale
+behandelt, nicht als FTS-Operatoren. Aufrufe ohne `-MatchMode` behalten die
+bisherige direkte FTS5-Abfragesyntax bei. Der optionale Dateiendungsfilter
+bleibt unverändert. `SearchMode` ist `FileName`, `Content` oder `Both` und
+standardmäßig `Both`.
 
 ### Datenbankverbindung schließen
 

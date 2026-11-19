@@ -192,6 +192,83 @@ Describe "SqliteDateiRepository" {
             -SearchMode Both).File.Path | Should -Be $file.Path
     }
 
+    It "combines whitespace-separated terms with AND or OR and preserves quoted phrases" {
+        $both = New-TestDatei -Path (Join-Path $script:testRoot "both.txt")
+        $both.Content = "blue comet and red"
+        $blue = New-TestDatei -Path (Join-Path $script:testRoot "blue.txt")
+        $blue.Content = "blue comet"
+        $red = New-TestDatei -Path (Join-Path $script:testRoot "red.txt")
+        $red.Content = "red giant"
+        $script:database.SaveBatch([Datei[]]@($both, $blue, $red))
+
+        $andResults = @(
+            Search-Query -Database $script:database -Query 'blue red' `
+                -SearchMode Content -MatchMode And
+        )
+        $orResults = @(
+            Search-Query -Database $script:database -Query 'blue red' `
+                -SearchMode Content -MatchMode Or
+        )
+        $phraseResults = @(
+            Search-Query -Database $script:database -Query '"blue comet" red' `
+                -SearchMode Content -MatchMode And
+        )
+
+        $andResults | Should -HaveCount 1
+        $andResults[0].File.Path | Should -Be $both.Path
+        $orResults | Should -HaveCount 3
+        $phraseResults | Should -HaveCount 1
+        $phraseResults[0].File.Path | Should -Be $both.Path
+    }
+
+    It "pages full-text and literal results with a stable order" {
+        $files = @(
+            (New-TestDatei -Path (Join-Path $script:testRoot "page-one.txt")),
+            (New-TestDatei -Path (Join-Path $script:testRoot "page-two.txt")),
+            (New-TestDatei -Path (Join-Path $script:testRoot "page-three.txt"))
+        )
+        foreach ($file in $files) {
+            $file.Content = "pagingtoken"
+        }
+        $script:database.SaveBatch([Datei[]]$files)
+
+        $firstPage = @(
+            Search-Query -Database $script:database -Query "pagingtoken" `
+                -SearchMode Content -Limit 2 -Offset 0
+        )
+        $secondPage = @(
+            Search-Query -Database $script:database -Query "pagingtoken" `
+                -SearchMode Content -Limit 2 -Offset 2
+        )
+        $pastEnd = @(
+            Search-Query -Database $script:database -Query "pagingtoken" `
+                -SearchMode Content -Limit 2 -Offset 3
+        )
+
+        $firstPage | Should -HaveCount 2
+        $firstPage[0].File.Path | Should -Be $files[0].Path
+        $firstPage[1].File.Path | Should -Be $files[1].Path
+        $secondPage | Should -HaveCount 1
+        $secondPage[0].File.Path | Should -Be $files[2].Path
+        $pastEnd | Should -BeNullOrEmpty
+
+        $contentHit = New-TestDatei -Path (Join-Path $script:testRoot "literalneedle-one.txt")
+        $contentHit.Content = "literalneedle"
+        $secondContentHit = New-TestDatei -Path (Join-Path $script:testRoot "literalneedle-two.txt")
+        $secondContentHit.Content = "literalneedle"
+        $filenameOnlyHit = New-TestDatei -Path (Join-Path $script:testRoot "literalneedle-three.txt")
+        $filenameOnlyHit.Content = "unrelated"
+        $script:database.SaveBatch([Datei[]]@($contentHit, $secondContentHit, $filenameOnlyHit))
+
+        $literalPage = @(
+            Search-Query -Database $script:database -Query "literalneedle" `
+                -Literal -Limit 2 -Offset 1
+        )
+        $literalPage | Should -HaveCount 2
+        $literalPage[0].File.Path | Should -Be $secondContentHit.Path
+        $literalPage[1].File.Path | Should -Be $filenameOnlyHit.Path
+    }
+
     It "indexes full text and returns a snippet and positive relevance score" {
         $file = New-TestDatei -Path (Join-Path $script:testRoot "alpha.txt")
         $file.Content = "A unique searchmarker appears in this document."
@@ -697,6 +774,8 @@ CREATE TABLE files_metadata (
         { Search-Query -Database $script:database -Query "any" -Limit 0 } |
             Should -Throw
         { $script:database.Search("any", 1001, $null) } | Should -Throw
+        { Search-Query -Database $script:database -Query "any" -Offset -1 } |
+            Should -Throw
     }
 
     It "throws when used after disposal" {
