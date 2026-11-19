@@ -483,7 +483,7 @@ WHERE id IN (
         [string]$extension,
         [string]$searchMode
     ) {
-        return $this.Search($query, $limit, $extension, $searchMode, @(), @())
+        return $this.Search($query, $limit, $extension, $searchMode, @(), @(), $null, 0)
     }
 
     [string[]] GetExtensions() {
@@ -519,9 +519,48 @@ WHERE id IN (
         [string[]]$includeExtensions,
         [string[]]$excludeExtensions
     ) {
+        return $this.Search(
+            $query, $limit, $extension, $searchMode,
+            $includeExtensions, $excludeExtensions, $null, 0
+        )
+    }
+
+    [object[]] Search(
+        [string]$query,
+        [int]$limit,
+        [string]$extension,
+        [string]$searchMode,
+        [string]$matchMode,
+        [int]$offset
+    ) {
+        return $this.Search(
+            $query, $limit, $extension, $searchMode,
+            @(), @(), $matchMode, $offset
+        )
+    }
+
+    [object[]] Search(
+        [string]$query,
+        [int]$limit,
+        [string]$extension,
+        [string]$searchMode,
+        [string[]]$includeExtensions,
+        [string[]]$excludeExtensions,
+        [string]$matchMode,
+        [int]$offset
+    ) {
         $this.EnsureOpen()
         if ($searchMode -notin @("FileName", "Content", "Both")) {
             throw "Search mode must be FileName, Content, or Both."
+        }
+        if (
+            -not [string]::IsNullOrWhiteSpace($matchMode) -and
+            $matchMode -notin @("And", "Or")
+        ) {
+            throw "Match mode must be And or Or."
+        }
+        if ($offset -lt 0) {
+            throw "Search offset must not be negative."
         }
         if ([string]::IsNullOrWhiteSpace($query)) {
             return @()
@@ -563,6 +602,24 @@ WHERE id IN (
                 return '"' + $match.Value + '"'
             }
         )
+
+        if (-not [string]::IsNullOrWhiteSpace($matchMode)) {
+            $terms = [System.Collections.Generic.List[string]]::new()
+            foreach ($match in [regex]::Matches($query, '"(?:[^"]|"")*"|\S+')) {
+                $term = $match.Value
+                if ($term.StartsWith('"') -and $term.EndsWith('"') -and $term.Length -ge 2) {
+                    $term = $term.Substring(1, $term.Length - 2).Replace('""', '"')
+                }
+                if (-not [string]::IsNullOrWhiteSpace($term)) {
+                    $terms.Add('"' + $term.Replace('"', '""') + '"')
+                }
+            }
+            if ($terms.Count -eq 0) {
+                return @()
+            }
+            $operator = if ($matchMode -eq "Or") { " OR " } else { " AND " }
+            $query = $terms -join $operator
+        }
 
         $searchCondition = switch ($searchMode) {
             "FileName" { "files_fts.filename MATCH `$queryParameter" }
@@ -614,7 +671,7 @@ WHERE id IN (
             "bm25(files_fts) AS rank, $snippetExpression AS excerpt " +
             "FROM files_fts JOIN files_metadata AS m ON m.id = files_fts.rowid " +
             "WHERE $searchCondition$extensionFilter " +
-            "ORDER BY rank LIMIT `$limitParameter;"
+            "ORDER BY rank, m.id LIMIT `$limitParameter OFFSET `$offsetParameter;"
         )
         [void]$command.Parameters.AddWithValue('$queryParameter', $query)
         for ($index = 0; $index -lt $normalizedIncludeExtensions.Count; $index++) {
@@ -630,6 +687,7 @@ WHERE id IN (
             )
         }
         [void]$command.Parameters.AddWithValue('$limitParameter', $limit)
+        [void]$command.Parameters.AddWithValue('$offsetParameter', $offset)
 
         $results = [System.Collections.Generic.List[object]]::new()
         try {
@@ -667,7 +725,20 @@ WHERE id IN (
             $extension,
             $searchMode,
             @(),
-            @()
+            @(),
+            0
+        )
+    }
+
+    [object[]] SearchLiteral(
+        [string]$query,
+        [int]$limit,
+        [string]$extension,
+        [string]$searchMode,
+        [int]$offset
+    ) {
+        return $this.SearchLiteral(
+            $query, $limit, $extension, $searchMode, @(), @(), $offset
         )
     }
 
@@ -679,6 +750,21 @@ WHERE id IN (
         [string[]]$includeExtensions,
         [string[]]$excludeExtensions
     ) {
+        return $this.SearchLiteral(
+            $query, $limit, $extension, $searchMode,
+            $includeExtensions, $excludeExtensions, 0
+        )
+    }
+
+    [object[]] SearchLiteral(
+        [string]$query,
+        [int]$limit,
+        [string]$extension,
+        [string]$searchMode,
+        [string[]]$includeExtensions,
+        [string[]]$excludeExtensions,
+        [int]$offset
+    ) {
         $this.EnsureOpen()
         if ($searchMode -notin @('FileName', 'Content', 'Both')) {
             throw 'Search mode must be FileName, Content, or Both.'
@@ -686,26 +772,13 @@ WHERE id IN (
         if ($limit -lt 1 -or $limit -gt 1000) {
             throw 'Search limit must be between 1 and 1000.'
         }
+        if ($offset -lt 0) {
+            throw 'Search offset must not be negative.'
+        }
         if ([string]::IsNullOrWhiteSpace($query)) { return @() }
 
         $phrase = '"' + $query.Replace('"', '""') + '"'
         $results = [System.Collections.Generic.List[object]]::new()
-        if ($searchMode -ne 'FileName') {
-            foreach ($result in $this.Search(
-                $phrase,
-                $limit,
-                $extension,
-                'Content',
-                $includeExtensions,
-                $excludeExtensions
-            )) {
-                $results.Add($result)
-            }
-        }
-        if ($searchMode -eq 'Content' -or $results.Count -ge $limit) {
-            return $results.ToArray()
-        }
-
         $normalizedIncludeExtensions = [System.Collections.Generic.List[string]]::new()
         $normalizedExcludeExtensions = [System.Collections.Generic.List[string]]::new()
         foreach ($candidate in @($extension) + @($includeExtensions)) {
@@ -727,10 +800,81 @@ WHERE id IN (
             }
         }
 
+        $contentCount = 0
+        if ($searchMode -ne 'FileName') {
+            $extensionConditions = [System.Collections.Generic.List[string]]::new()
+            if ($normalizedIncludeExtensions.Count -gt 0) {
+                $placeholders = [System.Collections.Generic.List[string]]::new()
+                for ($index = 0; $index -lt $normalizedIncludeExtensions.Count; $index++) {
+                    $placeholders.Add("`$includeExtension$index")
+                }
+                $extensionConditions.Add(
+                    'm.extension COLLATE NOCASE IN (' + ($placeholders -join ', ') + ')'
+                )
+            }
+            if ($normalizedExcludeExtensions.Count -gt 0) {
+                $placeholders = [System.Collections.Generic.List[string]]::new()
+                for ($index = 0; $index -lt $normalizedExcludeExtensions.Count; $index++) {
+                    $placeholders.Add("`$excludeExtension$index")
+                }
+                $extensionConditions.Add(
+                    'm.extension COLLATE NOCASE NOT IN (' + ($placeholders -join ', ') + ')'
+                )
+            }
+            $extensionFilter = if ($extensionConditions.Count -eq 0) {
+                ''
+            }
+            else {
+                'AND ' + ($extensionConditions -join ' AND ') + ' '
+            }
+            $countCommand = $this.NewCommand(
+                'SELECT count(*) FROM files_fts ' +
+                'JOIN files_metadata AS m ON m.id = files_fts.rowid ' +
+                'WHERE files_fts.content MATCH $phraseParameter ' +
+                $extensionFilter + ';'
+            )
+            [void]$countCommand.Parameters.AddWithValue('$phraseParameter', $phrase)
+            for ($index = 0; $index -lt $normalizedIncludeExtensions.Count; $index++) {
+                [void]$countCommand.Parameters.AddWithValue(
+                    "`$includeExtension$index",
+                    $normalizedIncludeExtensions[$index]
+                )
+            }
+            for ($index = 0; $index -lt $normalizedExcludeExtensions.Count; $index++) {
+                [void]$countCommand.Parameters.AddWithValue(
+                    "`$excludeExtension$index",
+                    $normalizedExcludeExtensions[$index]
+                )
+            }
+            try {
+                $contentCount = [int]$countCommand.ExecuteScalar()
+            }
+            finally {
+                $countCommand.Dispose()
+            }
+            if ($offset -lt $contentCount) {
+                $contentLimit = [Math]::Min($limit, $contentCount - $offset)
+                foreach ($result in $this.Search(
+                    $phrase, $contentLimit, $extension, 'Content',
+                    $includeExtensions, $excludeExtensions, $null, $offset
+                )) {
+                    $results.Add($result)
+                }
+            }
+        }
+        if ($searchMode -eq 'Content' -or $results.Count -ge $limit) {
+            return $results.ToArray()
+        }
+
         $pattern = '%' + $query.Replace('\', '\\').Replace('%', '\%').Replace('_', '\_') + '%'
         $excludeContent = if ($searchMode -eq 'Both') {
             'AND m.id NOT IN (SELECT rowid FROM files_fts WHERE files_fts.content MATCH $phraseParameter) '
         } else { '' }
+        $filenameOffset = if ($searchMode -eq 'Both') {
+            [Math]::Max(0, $offset - $contentCount)
+        } else {
+            $offset
+        }
         $extensionConditions = [System.Collections.Generic.List[string]]::new()
         if ($normalizedIncludeExtensions.Count -gt 0) {
             $placeholders = [System.Collections.Generic.List[string]]::new()
@@ -762,7 +906,7 @@ WHERE id IN (
             'm.indexed_at_utc_ticks, m.has_content, m.is_cloud_only ' +
             'FROM files_metadata AS m WHERE (m.filename || m.extension) LIKE $patternParameter ESCAPE ''\'' ' +
             $extensionFilter + $excludeContent +
-            'ORDER BY m.filename, m.id LIMIT $limitParameter;'
+            'ORDER BY m.filename, m.id LIMIT $limitParameter OFFSET $offsetParameter;'
         )
         [void]$command.Parameters.AddWithValue('$patternParameter', $pattern)
         for ($index = 0; $index -lt $normalizedIncludeExtensions.Count; $index++) {
@@ -778,6 +922,7 @@ WHERE id IN (
             )
         }
         [void]$command.Parameters.AddWithValue('$limitParameter', $limit - $results.Count)
+        [void]$command.Parameters.AddWithValue('$offsetParameter', $filenameOffset)
         if ($searchMode -eq 'Both') {
             [void]$command.Parameters.AddWithValue('$phraseParameter', $phrase)
         }
@@ -1291,7 +1436,13 @@ function Search-Query {
 
         [string[]]$IncludeExtensions = @(),
 
-        [string[]]$ExcludeExtensions = @()
+        [string[]]$ExcludeExtensions = @(),
+
+        [ValidateRange(0, 2147483647)]
+        [int]$Offset = 0,
+
+        [ValidateSet("And", "Or")]
+        [string]$MatchMode
     )
 
     if ($Literal) {
@@ -1301,7 +1452,8 @@ function Search-Query {
             $Extension,
             $SearchMode,
             $IncludeExtensions,
-            $ExcludeExtensions
+            $ExcludeExtensions,
+            $Offset
         )
     }
     return $Database.Search(
@@ -1310,7 +1462,9 @@ function Search-Query {
         $Extension,
         $SearchMode,
         $IncludeExtensions,
-        $ExcludeExtensions
+        $ExcludeExtensions,
+        $MatchMode,
+        $Offset
     )
 }
 
