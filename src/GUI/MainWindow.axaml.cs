@@ -10,26 +10,26 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
+
 namespace FileSearcherApp
 {
     public partial class MainWindow : Window
     {
         private readonly ObservableCollection<string> _fileTypes = new();
 
-        //Live-Search
+        // Live-Search
         private const int DebounceMs = 500;   // Pause nach der letzten Eingabe
         private const int MinChars = 2;       // kürzere Eingaben suchen wir nicht automatisch
         private CancellationTokenSource? _cts;   // gehört zur jeweils neuesten Eingabe
 
-
-        //Sorting
+        // Sorting
         private enum SortKey { Relevance, Name, Type, Date }
         private SortKey _sortKey = SortKey.Relevance;
         private bool _sortAscending = true;
         private IReadOnlyList<SearchHit> _hits = Array.Empty<SearchHit>();
         private static readonly StringComparer Cmp = StringComparer.CurrentCultureIgnoreCase;
-            
-        //Searching + Loading    
+
+        // Searching + Loading
         private ISearchService? _search;
         private bool _windowLoaded;
 
@@ -47,11 +47,12 @@ namespace FileSearcherApp
             // Erst nach dem Laden auf Ereignisse reagieren.
             _windowLoaded = true;
 
+            SearchBox.TextChanged += OnSearchTextChanged;
             SearchBox.KeyDown += OnSearchKeyDown;
 
             UpdateSearchWatermark();
 
-            //Statusleiste & Fortschrittsbalken mit dem Hintergrund-Crawler verbinden
+            // Statusleiste & Fortschrittsbalken mit dem Hintergrund-Crawler verbinden
             InitializeCrawlerStatus();
         }
 
@@ -209,6 +210,13 @@ namespace FileSearcherApp
                 : $"Dateien gefunden: {count}";
         }
 
+        private void OnSearchTextChanged(object? sender, TextChangedEventArgs e)
+        {
+            if (!_windowLoaded)
+                return;
+
+            _ = ExecuteSearchAsync(DebounceMs);
+        }
 
         private void OnSearchKeyDown(object? sender, KeyEventArgs e)
         {
@@ -262,28 +270,43 @@ namespace FileSearcherApp
             }
         }
 
-
-        //Searching
-        private async void PerformSearch()
+        // Searching
+        private void PerformSearch()
         {
             if (!_windowLoaded)
                 return;
 
+            _ = ExecuteSearchAsync(0);
+        }
+
+        private async Task ExecuteSearchAsync(int delayMs)
+        {
             _cts?.Cancel();
-            using var searchCancellation = new CancellationTokenSource();
-            _cts = searchCancellation;
+            var cts = new CancellationTokenSource();
+            _cts = cts;
+            var ct = cts.Token;
 
             try
             {
-                string query = SearchBox.Text?.Trim() ?? "";
+                if (delayMs > 0)
+                {
+                    await Task.Delay(delayMs, ct);
+                }
 
-                ResultsList.Items.Clear();
-                _hits = Array.Empty<SearchHit>();               
+                string query = SearchBox.Text?.Trim() ?? "";
 
                 if (string.IsNullOrWhiteSpace(query))
                 {
+                    _hits = Array.Empty<SearchHit>();
                     SetCount(0);
+                    ResultsList.Items.Clear();
                     ResultsList.Items.Add("Bitte einen Suchbegriff eingeben.");
+                    return;
+                }
+
+                // Bei Live-Suche erst ab MinChars Zeichen suchen; Enter/Filter/Moduswechsel suchen immer
+                if (delayMs > 0 && query.Length < MinChars)
+                {
                     return;
                 }
 
@@ -293,41 +316,48 @@ namespace FileSearcherApp
                     query,
                     SearchLimit,
                     mode: _currentSearchMode,
-                    ct: searchCancellation.Token,
+                    ct: ct,
                     extensions: new List<string>(_fileTypes));
 
-                searchCancellation.Token.ThrowIfCancellationRequested();
+                ct.ThrowIfCancellationRequested();
+
+                ResultsList.Items.Clear();
 
                 if (hits == null || hits.Count == 0)
                 {
+                    _hits = Array.Empty<SearchHit>();
                     SetCount(0);
                     ResultsList.Items.Add("Keine Treffer gefunden.");
                     return;
                 }
 
-                _hits = hits;                                   
+                _hits = hits;
                 SetCount(hits.Count);
-                ShowHits();                                       
+                ShowHits();
             }
-            catch (Exception ex) when (!searchCancellation.IsCancellationRequested)
+            catch (OperationCanceledException)
             {
-                _hits = Array.Empty<SearchHit>();                 
+                // Eine neuere Eingabe oder das Schließen des Fensters hat diese Suche abgelöst.
+            }
+            catch (Exception ex)
+            {
+                if (ct.IsCancellationRequested)
+                    return;
+
+                _hits = Array.Empty<SearchHit>();
                 SetCount(0);
                 ResultsList.Items.Clear();
                 ResultsList.Items.Add($"Fehler: {ex.Message}");
             }
-            catch (Exception) when (searchCancellation.IsCancellationRequested)
-            {
-                // Eine neuere Suche oder das Schließen des Fensters hat diese Suche abgelöst.
-            }
             finally
             {
-                if (ReferenceEquals(_cts, searchCancellation))
+                if (ReferenceEquals(_cts, cts))
                     _cts = null;
+                cts.Dispose();
             }
         }
 
-        //Sorting  
+        // Sorting
         private void OnSortHeaderTapped(object? sender, TappedEventArgs e)
         {
             if (sender is not TextBlock { Tag: string tag }) return;
@@ -338,9 +368,9 @@ namespace FileSearcherApp
             else
             {
                 _sortKey = key;
-                // _sortAscending = key != SortKey.Date; <- Wir können das aus Kommentar ziehen, 
+                // _sortAscending = key != SortKey.Date; <- Wir können das aus Kommentar ziehen,
                 // damit wir für Daten erst neue bekommen haben, aber die Pfeil dann beim Start andersrum gedreht
-             }
+            }
 
             UpdateSortLabels();
             if (_hits.Count > 0) ShowHits();
@@ -361,7 +391,9 @@ namespace FileSearcherApp
                 SortKey.Name => _sortAscending
                     ? _hits.OrderBy(h => h.FileName, Cmp)
                     : _hits.OrderByDescending(h => h.FileName, Cmp),
-                SortKey.Type => _hits.OrderBy(h => h.Extension, Cmp).ThenBy(h => h.FileName, Cmp),
+                SortKey.Type => _sortAscending
+                    ? _hits.OrderBy(h => h.Extension, Cmp).ThenBy(h => h.FileName, Cmp)
+                    : _hits.OrderByDescending(h => h.Extension, Cmp).ThenBy(h => h.FileName, Cmp),
                 SortKey.Date => _sortAscending
                     ? _hits.OrderBy(h => h.LastWriteUtc)
                     : _hits.OrderByDescending(h => h.LastWriteUtc),
@@ -371,6 +403,5 @@ namespace FileSearcherApp
             ResultsList.Items.Clear();
             foreach (var hit in sorted) ResultsList.Items.Add(hit);
         }
-
     }
 }
