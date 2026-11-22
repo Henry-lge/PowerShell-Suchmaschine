@@ -8,13 +8,13 @@
         Width="650"
         Height="450"
         Icon="avares://FileSearcherApp/GUIAssets/icon.png"
-        Background="#0c3835">
+        Background="{DynamicResource ThemePrimaryBrush}">
 
     <Window.Styles>
         <Style Selector="ToolTip">
-            <Setter Property="Background" Value="#001816"/>
-            <Setter Property="Foreground" Value="#C9DDDC"/>
-            <Setter Property="BorderBrush" Value="#3F6B68"/>
+            <Setter Property="Background" Value="{DynamicResource ThemeSecondaryBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeBorderBrush}"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="CornerRadius" Value="8"/>
             <Setter Property="Padding" Value="12"/>
@@ -22,6 +22,49 @@
 
         <Style Selector="ListBoxItem">
             <Setter Property="Padding" Value="0"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextBrush}"/>
+        </Style>
+
+        <Style Selector="FlyoutPresenter.app-flyout">
+            <Setter Property="Background" Value="{DynamicResource ThemePrimaryBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeBorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="12"/>
+            <Setter Property="Padding" Value="14"/>
+        </Style>
+
+        <Style Selector="FlyoutPresenter.app-flyout TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextBrush}"/>
+        </Style>
+
+        <Style Selector="Button.toolbar-button">
+            <Setter Property="Width" Value="40"/>
+            <Setter Property="Height" Value="40"/>
+            <Setter Property="CornerRadius" Value="20"/>
+            <Setter Property="Background" Value="{DynamicResource ThemeSecondaryBrush}"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="HorizontalContentAlignment" Value="Center"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+
+        <Style Selector="Button.menu-button">
+            <Setter Property="Background" Value="{DynamicResource ThemeSecondaryBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeBorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="10"/>
+        </Style>
+
+        <Style Selector="TextBox.menu-input, ComboBox.menu-input">
+            <Setter Property="Background" Value="{DynamicResource ThemeSecondaryBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeBorderBrush}"/>
+            <Setter Property="CornerRadius" Value="8"/>
+        </Style>
+
+        <Style Selector="TextBox.menu-input">
+            <Setter Property="CaretBrush" Value="{DynamicResource ThemeTextBrush}"/>
         </Style>
     </Window.Styles>
 
@@ -36,7 +79,9 @@
                 <TextBlock Grid.Column="0"
                            x:Name="WelcomeText"
                            Text="Hallo!"
-                           Foreground="#8AABAA"
+                           TextTrimming="CharacterEllipsis"
+                           Margin="0,0,16,0"
+                           Foreground="{DynamicResource ThemeTextBrush}"
                            FontSize="18"
                            FontWeight="Bold"
                            VerticalAlignment="Center"
@@ -45,7 +90,7 @@
                 <TextBlock Grid.Column="1"
                            x:Name="ResultsCountText"
                            Text="Dateien gefunden: 0"
-                           Foreground="#8AABAA"
+                           Foreground="{DynamicResource ThemeTextBrush}"
                            FontSize="18"
                            FontWeight="Bold"
                            VerticalAlignment="Center"
@@ -59,76 +104,114 @@
 
                 <Border Grid.Column="0"
                         CornerRadius="8"
-                        Background="#001816"
+                        Background="{DynamicResource ThemeSecondaryBrush}"
                         Margin="0,0,10,0">
                     <TextBox x:Name="SearchBox"
                              Watermark="Suchbegriff eingeben..."
                              Background="Transparent"
                              BorderBrush="Transparent"
-                             Foreground="#C9DDDC"
-                             CaretBrush="#C9DDDC"
+                             Foreground="{DynamicResource ThemeTextBrush}"
+                             CaretBrush="{DynamicResource ThemeTextBrush}"
                              FontSize="16"
                              Margin="4"/>
                 </Border>
 
                 <!-- Filterbutton -->
                 <Button Grid.Column="1"
-                        Width="40"
-                        Height="40"
-                        CornerRadius="20"
-                        Background="#001816"
-                        Foreground="#8AABAA"
-                        Padding="0"
+                        Classes="toolbar-button"
                         Margin="0,0,5,0"
-                        ToolTip.Tip="Suchfilter auswählen">
-                    <Image Source="avares://FileSearcherApp/GUIAssets/filterIcon.png"
-                           Width="20"
-                           Height="20"
-                           HorizontalAlignment="Center"
-                           VerticalAlignment="Center"/>
+                        ToolTip.Tip="Suchfilter"
+                        AutomationProperties.Name="Suchfilter">
+                    <PathIcon Width="20" Height="20" Foreground="{DynamicResource ThemeIconBrush}"
+                              Data="M2,5 H13 V7 H2 Z M16,5 H22 V7 H16 Z M13,3 H16 V9 H13 Z M2,11 H7 V13 H2 Z M10,11 H22 V13 H10 Z M7,9 H10 V15 H7 Z M2,17 H15 V19 H2 Z M18,17 H22 V19 H18 Z M15,15 H18 V21 H15 Z"/>
                     <Button.Flyout>
-                        <MenuFlyout>
-                            <MenuItem Header="Nach Name" Tag="FileName" Click="OnFilterMenuItemClick"/>
-                            <MenuItem Header="Nach Inhalt" Tag="Content" Click="OnFilterMenuItemClick"/>
-                            <MenuItem Header="Nach Beidem" Tag="Both" Click="OnFilterMenuItemClick"/>
-                        </MenuFlyout>
+                        <Flyout FlyoutPresenterClasses="app-flyout" Opened="OnFilterFlyoutOpened">
+                            <StackPanel Width="280" Spacing="8">
+                                <TextBlock Text="Dateitypen" FontWeight="Bold"/>
+                                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
+                                    <TextBox x:Name="FileTypeBox" Classes="menu-input"
+                                             Watermark="z. B. pdf, docx"
+                                             AutomationProperties.Name="Dateiendungen"
+                                             KeyDown="OnFileTypeKeyDown"/>
+                                    <Button Grid.Column="1" Classes="menu-button" Content="Hinzufügen"
+                                            Click="OnAddFileTypesClick" VerticalAlignment="Stretch"/>
+                                </Grid>
+                                <TextBlock x:Name="FileTypeErrorText" IsVisible="False" TextWrapping="Wrap"/>
+                                <ScrollViewer MaxHeight="160" VerticalScrollBarVisibility="Auto"
+                                              HorizontalScrollBarVisibility="Disabled">
+                                    <ItemsControl x:Name="FileTypeList">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate x:DataType="x:String">
+                                                <Grid ColumnDefinitions="*,Auto" Margin="0,2">
+                                                    <TextBlock Text="{Binding .}" TextTrimming="CharacterEllipsis"
+                                                               VerticalAlignment="Center"/>
+                                                    <Button Grid.Column="1" Classes="menu-button" Click="OnRemoveFileTypeClick"
+                                                            Width="32" Height="32" Padding="0"
+                                                            HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
+                                                            ToolTip.Tip="Dateityp entfernen"
+                                                            AutomationProperties.Name="{Binding ., StringFormat='Dateityp {0} entfernen'}">
+                                                        <PathIcon Width="14" Height="14" Foreground="{DynamicResource ThemeIconBrush}"
+                                                                  Data="M9,3 H15 V5 H20 V7 H4 V5 H9 Z M6,9 H18 L17,21 H7 Z"/>
+                                                    </Button>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                                <ComboBox Classes="menu-input" HorizontalAlignment="Stretch" SelectedIndex="0"
+                                          AutomationProperties.Name="Suchbereich"
+                                          SelectionChanged="OnSearchModeChanged">
+                                    <ComboBoxItem Content="Nach Name" Tag="FileName"/>
+                                    <ComboBoxItem Content="Nach Inhalt" Tag="Content"/>
+                                    <ComboBoxItem Content="Nach Name und Inhalt" Tag="Both"/>
+                                </ComboBox>
+                            </StackPanel>
+                        </Flyout>
                     </Button.Flyout>
                 </Button>
 
                 <!-- Einstellungsbutton -->
-                <Button Grid.Column="2"
-                        Width="40"
-                        Height="40"
-                        CornerRadius="20"
-                        Background="#001816"
-                        Foreground="#8AABAA"
-                        Padding="0"
-                        ToolTip.Tip="Einstellungen">
-                    <Image Source="avares://FileSearcherApp/GUIAssets/settingsIcon.png"
-                           Width="20"
-                           Height="20"
-                           HorizontalAlignment="Center"
-                           VerticalAlignment="Center"/>
-                    <Button.Flyout>
-                        <MenuFlyout>
-                            <MenuItem Header="Gestalten"/>
-                            <MenuItem Header="filler"/>
-                            <MenuItem Header="Die Gui ist schuld"/>
-                        </MenuFlyout>
-                    </Button.Flyout>
+                <Button Grid.Column="2" Classes="toolbar-button"
+                        ToolTip.Tip="Optionen" AutomationProperties.Name="Optionen"
+                        Click="OnOptionsClick">
+                    <Border Width="20" Height="20" Background="{DynamicResource ThemeIconBrush}">
+                        <Border.OpacityMask>
+                            <ImageBrush Source="avares://FileSearcherApp/GUIAssets/settingsIcon.png" Stretch="Uniform"/>
+                        </Border.OpacityMask>
+                    </Border>
                 </Button>
             </Grid>
 
             <!-- Tabellenkopf -->
             <Border Grid.Row="2"
-                    BorderBrush="#408AABAA"
+                    BorderBrush="{DynamicResource ThemeBorderBrush}"
                     BorderThickness="0,0,0,1"
                     Padding="12,6,28,6">
-                <Grid ColumnDefinitions="2*,60,130,3*" ColumnSpacing="12">
-                    <TextBlock Grid.Column="0" Text="Datei"    FontWeight="Bold" Foreground="#8AABAA"/>
-                    <TextBlock Grid.Column="1" Text="Typ"      FontWeight="Bold" Foreground="#8AABAA"/>
-                    <TextBlock Grid.Column="2" Text="Geändert" FontWeight="Bold" Foreground="#8AABAA"/>
-                    <TextBlock Grid.Column="3" Text="Pfad"     FontWeight="Bold" Foreground="#8AABAA"/>
+                <Grid ColumnDefinitions="*,70,140" ColumnSpacing="12">
+                    <TextBlock Grid.Column="0"
+                               x:Name="SortNameHeader"
+                               Text="Datei"
+                               Tag="Name"
+                               Tapped="OnSortHeaderTapped"
+                               Cursor="Hand"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource ThemeTextBrush}"/>
+                    <TextBlock Grid.Column="1"
+                               x:Name="SortTypeHeader"
+                               Text="Typ"
+                               Tag="Type"
+                               Tapped="OnSortHeaderTapped"
+                               Cursor="Hand"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource ThemeTextBrush}"/>
+                    <TextBlock Grid.Column="2"
+                               x:Name="SortDateHeader"
+                               Text="Geändert"
+                               Tag="Date"
+                               Tapped="OnSortHeaderTapped"
+                               Cursor="Hand"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource ThemeTextBrush}"/>
                 </Grid>
             </Border>
 
@@ -137,8 +220,8 @@
                      x:Name="ResultsList"
                      HorizontalAlignment="Stretch"
                      VerticalAlignment="Stretch"
-                     Background="#001816"
-                     Foreground="#8AABAA"
+                     Background="{DynamicResource ThemeSecondaryBrush}"
+                     Foreground="{DynamicResource ThemeTextBrush}"
                      ScrollViewer.VerticalScrollBarVisibility="Auto"
                      ScrollViewer.HorizontalScrollBarVisibility="Disabled">
 
@@ -158,14 +241,12 @@
 
                                     <!-- Vorschaubild (nur bei Bilddateien sichtbar) -->
                                     <Image Source="{Binding Path, Converter={x:Static local:ThumbnailConverter.Instance}}"
-                                           IsVisible="{Binding $self.Source, Converter={x:Static ObjectConverters.IsNotNull}}"
                                            MaxWidth="320"
                                            MaxHeight="200"
                                            Stretch="Uniform"
                                            HorizontalAlignment="Left"/>
 
                                     <TextBlock Inlines="{Binding Preview, Converter={x:Static local:HighlightConverter.Instance}}"
-                                               IsVisible="{Binding Path, Converter={x:Static local:FileTypeConverters.IsNotImage}}"
                                                TextWrapping="Wrap"
                                                MaxHeight="220"
                                                TextTrimming="CharacterEllipsis"/>
@@ -175,11 +256,10 @@
                                 </StackPanel>
                             </ToolTip.Tip>
 
-                            <Grid ColumnDefinitions="2*,60,130,3*" ColumnSpacing="12">
+                            <Grid ColumnDefinitions="*,70,140" ColumnSpacing="12">
                                 <TextBlock Grid.Column="0" Text="{Binding FileName}" TextTrimming="CharacterEllipsis"/>
                                 <TextBlock Grid.Column="1" Text="{Binding Extension}" Opacity="0.8" TextTrimming="CharacterEllipsis"/>
                                 <TextBlock Grid.Column="2" Text="{Binding LastWriteText}" Opacity="0.8" TextTrimming="CharacterEllipsis"/>
-                                <TextBlock Grid.Column="3" Text="{Binding Path}" Opacity="0.8" TextTrimming="CharacterEllipsis"/>
                             </Grid>
                         </Border>
                     </DataTemplate>
@@ -189,12 +269,12 @@
         </Grid>
 
         <!-- Statusleiste -->
-        <Border Grid.Row="1" Background="#082624" Padding="10,6">
+        <Border Grid.Row="1" Background="{DynamicResource ThemeShadeBrush}" Padding="10,6">
             <Grid ColumnDefinitions="*,Auto">
                 <TextBlock x:Name="ScanStatusText"
                            Grid.Column="0"
                            Text="Bereit"
-                           Foreground="#80A09F"
+                           Foreground="{DynamicResource ThemeTextBrush}"
                            FontSize="12"
                            VerticalAlignment="Center"
                            TextTrimming="CharacterEllipsis"
@@ -205,8 +285,8 @@
                              Height="6"
                              IsVisible="False"
                              IsIndeterminate="False"
-                             Foreground="#80A09F"
-                             Background="#0c3835"
+                             Foreground="{DynamicResource ThemeTextBrush}"
+                             Background="{DynamicResource ThemePrimaryBrush}"
                              VerticalAlignment="Center"/>
             </Grid>
         </Border>

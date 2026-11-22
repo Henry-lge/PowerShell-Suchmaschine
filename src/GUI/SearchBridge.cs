@@ -20,7 +20,7 @@ namespace FileSearcherApp
         string.IsNullOrWhiteSpace(Snippet)
             ? "Keine Vorschau verfügbar."
             : Regex.Replace(Snippet, @"\s+", " ").Trim();
-        
+
         //Änderungsdatum für Tooltip: in Lokalzeit, für den Tooltip
         public string LastWriteText => LastWriteUtc.ToLocalTime().ToString("g");
         public override string ToString() =>
@@ -37,7 +37,8 @@ namespace FileSearcherApp
     {
         Task<IReadOnlyList<SearchHit>> SearchAsync(
          string query, int limit = 100, string? extension = null,
-            string mode = "both", CancellationToken ct = default);
+            string mode = "both", CancellationToken ct = default,
+            IReadOnlyList<string>? extensions = null);
     }
 
     public sealed class PowerShellSearchService : ISearchService
@@ -55,8 +56,15 @@ namespace FileSearcherApp
         }
 
         public async Task<IReadOnlyList<SearchHit>> SearchAsync(
-            string query, int limit = 100, string? extension = null, string mode = "both", CancellationToken ct = default)
+            string query, int limit = 100, string? extension = null, string mode = "both",
+            CancellationToken ct = default, IReadOnlyList<string>? extensions = null)
         {
+            var normalizedMode = mode.Trim().ToLowerInvariant();
+            if (normalizedMode is not ("filename" or "content" or "both"))
+                throw new SearchException($"Ungültiger Suchmodus: {mode}");
+
+            ct.ThrowIfCancellationRequested();
+
             var psi = new ProcessStartInfo("pwsh")
             {
                 RedirectStandardInput = true,
@@ -93,22 +101,10 @@ namespace FileSearcherApp
             using (proc)
             using (ct.Register(() => { try { proc.Kill(true); } catch { } }))
             {
-                var normalizedMode = mode.Trim().ToLowerInvariant();
-
-if (normalizedMode is not ("filename" or "content" or "both"))
-    throw new SearchException($"Ungültiger Suchmodus: {mode}");
-
-var request = JsonSerializer.Serialize(
-    new
-    {
-        query,
-        limit,
-        extension,
-        literal = true,
-        mode = normalizedMode
-    },
-    Json);
-                await proc.StandardInput.WriteAsync(request);
+                var request = JsonSerializer.Serialize(
+                    new { query, limit, extension, extensions, literal = true, mode = normalizedMode },
+                    Json);
+                await proc.StandardInput.WriteAsync(request.AsMemory(), ct);
                 proc.StandardInput.Close();
 
                 var stdoutTask = proc.StandardOutput.ReadToEndAsync();
