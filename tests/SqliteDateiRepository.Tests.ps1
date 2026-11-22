@@ -276,6 +276,58 @@ Describe "SqliteDateiRepository" {
         @(Search-Query -Database $script:database -Query 'marker' -Literal -SearchMode Content) | Should -HaveCount 1
     }
 
+    It "supports included and excluded extension lists and returns indexed extensions" {
+        $textFile = New-TestDatei -Path (Join-Path $script:testRoot "report.txt")
+        $pdfFile = New-TestDatei -Path (Join-Path $script:testRoot "report.pdf")
+        $wordFile = New-TestDatei -Path (Join-Path $script:testRoot "report.docx")
+        foreach ($file in @($textFile, $pdfFile, $wordFile)) {
+            $file.Content = "extensionlistmarker"
+        }
+        $script:database.SaveBatch([Datei[]]@($textFile, $pdfFile, $wordFile))
+
+        (Get-SearchExtensions -Database $script:database) |
+            Should -Be @(".docx", ".pdf", ".txt")
+        $results = @(
+            Search-Query -Database $script:database -Query "extensionlistmarker" `
+                -IncludeExtensions @("TXT", "pdf") -ExcludeExtensions @(".PDF")
+        )
+        $results | Should -HaveCount 1
+        $results[0].File.Extension | Should -Be ".txt"
+
+        $results = @(
+            Search-Query -Database $script:database -Query "extensionlistmarker" `
+                -ExcludeExtensions @("txt", "docx")
+        )
+        $results | Should -HaveCount 1
+        $results[0].File.Extension | Should -Be ".pdf"
+    }
+
+    It "applies extension filters to literal searches" {
+        $textFile = New-TestDatei -Path (Join-Path $script:testRoot "literal.txt")
+        $pdfFile = New-TestDatei -Path (Join-Path $script:testRoot "literal.pdf")
+        $script:database.SaveBatch([Datei[]]@($textFile, $pdfFile))
+
+        $results = @(
+            Search-Query -Database $script:database -Query "." `
+                -Literal -IncludeExtensions @("txt", "pdf") `
+                -ExcludeExtensions @("PDF") -SearchMode FileName
+        )
+
+        $results | Should -HaveCount 1
+        $results[0].File.Extension | Should -Be ".txt"
+    }
+
+    It "searches hyphenated words as adjacent indexed tokens" {
+        $file = New-TestDatei -Path (Join-Path $script:testRoot "state-of-the-art.txt")
+        $file.Content = "A state-of-the-art search marker."
+        $script:database.Save($file)
+
+        $results = @(Search-Query -Database $script:database -Query "state-of-the-art")
+
+        $results | Should -HaveCount 1
+        $results[0].File.Path | Should -Be $file.Path
+    }
+
     It "returns no results for blank queries and unmatched terms" {
         $file = New-TestDatei -Path (Join-Path $script:testRoot "notes.txt")
         $script:database.Save($file)
