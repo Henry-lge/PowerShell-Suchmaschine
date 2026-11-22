@@ -378,7 +378,7 @@ namespace FileSearcherApp
 
         private void UpdateSortLabels()
         {
-            string Arrow(SortKey k) => _sortKey != k ? "" : (_sortAscending ? " ↓" : " ↑");
+            string Arrow(SortKey k) => _sortKey != k ? "" : (_sortAscending ? " ↑" : " ↓");
             SortNameHeader.Text = "Datei" + Arrow(SortKey.Name);
             SortTypeHeader.Text = "Typ" + Arrow(SortKey.Type);
             SortDateHeader.Text = "Geändert" + Arrow(SortKey.Date);
