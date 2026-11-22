@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -13,9 +14,22 @@ namespace FileSearcherApp
 {
     public partial class MainWindow : Window
     {
-        private CancellationTokenSource? _cts;
         private readonly ObservableCollection<string> _fileTypes = new();
 
+        //Live-Search
+        private const int DebounceMs = 500;   // Pause nach der letzten Eingabe
+        private const int MinChars = 2;       // kürzere Eingaben suchen wir nicht automatisch
+        private CancellationTokenSource? _cts;   // gehört zur jeweils neuesten Eingabe
+
+
+        //Sorting
+        private enum SortKey { Relevance, Name, Type, Date }
+        private SortKey _sortKey = SortKey.Relevance;
+        private bool _sortAscending = true;
+        private IReadOnlyList<SearchHit> _hits = Array.Empty<SearchHit>();
+        private static readonly StringComparer Cmp = StringComparer.CurrentCultureIgnoreCase;
+            
+        //Searching + Loading    
         private ISearchService? _search;
         private bool _windowLoaded;
 
@@ -248,6 +262,8 @@ namespace FileSearcherApp
             }
         }
 
+
+        //Searching
         private async void PerformSearch()
         {
             if (!_windowLoaded)
@@ -262,6 +278,7 @@ namespace FileSearcherApp
                 string query = SearchBox.Text?.Trim() ?? "";
 
                 ResultsList.Items.Clear();
+                _hits = Array.Empty<SearchHit>();               
 
                 if (string.IsNullOrWhiteSpace(query))
                 {
@@ -288,14 +305,13 @@ namespace FileSearcherApp
                     return;
                 }
 
+                _hits = hits;                                   
                 SetCount(hits.Count);
-                foreach (var hit in hits)
-                {
-                    ResultsList.Items.Add(hit);
-                }
+                ShowHits();                                       
             }
             catch (Exception ex) when (!searchCancellation.IsCancellationRequested)
             {
+                _hits = Array.Empty<SearchHit>();                 
                 SetCount(0);
                 ResultsList.Items.Clear();
                 ResultsList.Items.Add($"Fehler: {ex.Message}");
@@ -310,5 +326,51 @@ namespace FileSearcherApp
                     _cts = null;
             }
         }
+
+        //Sorting  
+        private void OnSortHeaderTapped(object? sender, TappedEventArgs e)
+        {
+            if (sender is not TextBlock { Tag: string tag }) return;
+            var key = tag switch { "Name" => SortKey.Name, "Type" => SortKey.Type, "Date" => SortKey.Date, _ => SortKey.Relevance };
+
+            if (key == _sortKey && key != SortKey.Type)
+                _sortAscending = !_sortAscending;
+            else
+            {
+                _sortKey = key;
+                // _sortAscending = key != SortKey.Date; <- Wir können das aus Kommentar ziehen, 
+                // damit wir für Daten erst neue bekommen haben, aber die Pfeil dann beim Start andersrum gedreht
+             }
+
+            UpdateSortLabels();
+            if (_hits.Count > 0) ShowHits();
+        }
+
+        private void UpdateSortLabels()
+        {
+            string Arrow(SortKey k) => _sortKey != k ? "" : (_sortAscending ? " ↓" : " ↑");
+            SortNameHeader.Text = "Datei" + Arrow(SortKey.Name);
+            SortTypeHeader.Text = "Typ" + Arrow(SortKey.Type);
+            SortDateHeader.Text = "Geändert" + Arrow(SortKey.Date);
+        }
+
+        private void ShowHits()
+        {
+            IEnumerable<SearchHit> sorted = _sortKey switch
+            {
+                SortKey.Name => _sortAscending
+                    ? _hits.OrderBy(h => h.FileName, Cmp)
+                    : _hits.OrderByDescending(h => h.FileName, Cmp),
+                SortKey.Type => _hits.OrderBy(h => h.Extension, Cmp).ThenBy(h => h.FileName, Cmp),
+                SortKey.Date => _sortAscending
+                    ? _hits.OrderBy(h => h.LastWriteUtc)
+                    : _hits.OrderByDescending(h => h.LastWriteUtc),
+                _ => _hits
+            };
+
+            ResultsList.Items.Clear();
+            foreach (var hit in sorted) ResultsList.Items.Add(hit);
+        }
+
     }
 }

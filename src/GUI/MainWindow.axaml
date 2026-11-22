@@ -187,11 +187,31 @@
                     BorderBrush="{DynamicResource ThemeBorderBrush}"
                     BorderThickness="0,0,0,1"
                     Padding="12,6,28,6">
-                <Grid ColumnDefinitions="2*,60,130,3*" ColumnSpacing="12">
-                    <TextBlock Grid.Column="0" Text="Datei"    FontWeight="Bold" Foreground="{DynamicResource ThemeTextBrush}"/>
-                    <TextBlock Grid.Column="1" Text="Typ"      FontWeight="Bold" Foreground="{DynamicResource ThemeTextBrush}"/>
-                    <TextBlock Grid.Column="2" Text="Geändert" FontWeight="Bold" Foreground="{DynamicResource ThemeTextBrush}"/>
-                    <TextBlock Grid.Column="3" Text="Pfad"     FontWeight="Bold" Foreground="{DynamicResource ThemeTextBrush}"/>
+                <Grid ColumnDefinitions="*,70,140" ColumnSpacing="12">
+                    <TextBlock Grid.Column="0"
+                               x:Name="SortNameHeader"
+                               Text="Datei"
+                               Tag="Name"
+                               Tapped="OnSortHeaderTapped"
+                               Cursor="Hand"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource ThemeTextBrush}"/>
+                    <TextBlock Grid.Column="1"
+                               x:Name="SortTypeHeader"
+                               Text="Typ"
+                               Tag="Type"
+                               Tapped="OnSortHeaderTapped"
+                               Cursor="Hand"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource ThemeTextBrush}"/>
+                    <TextBlock Grid.Column="2"
+                               x:Name="SortDateHeader"
+                               Text="Geändert"
+                               Tag="Date"
+                               Tapped="OnSortHeaderTapped"
+                               Cursor="Hand"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource ThemeTextBrush}"/>
                 </Grid>
             </Border>
 
@@ -221,14 +241,12 @@
 
                                     <!-- Vorschaubild (nur bei Bilddateien sichtbar) -->
                                     <Image Source="{Binding Path, Converter={x:Static local:ThumbnailConverter.Instance}}"
-                                           IsVisible="{Binding $self.Source, Converter={x:Static ObjectConverters.IsNotNull}}"
                                            MaxWidth="320"
                                            MaxHeight="200"
                                            Stretch="Uniform"
                                            HorizontalAlignment="Left"/>
 
                                     <TextBlock Inlines="{Binding Preview, Converter={x:Static local:HighlightConverter.Instance}}"
-                                               IsVisible="{Binding Path, Converter={x:Static local:FileTypeConverters.IsNotImage}}"
                                                TextWrapping="Wrap"
                                                MaxHeight="220"
                                                TextTrimming="CharacterEllipsis"/>
@@ -238,11 +256,10 @@
                                 </StackPanel>
                             </ToolTip.Tip>
 
-                            <Grid ColumnDefinitions="2*,60,130,3*" ColumnSpacing="12">
+                            <Grid ColumnDefinitions="*,70,140" ColumnSpacing="12">
                                 <TextBlock Grid.Column="0" Text="{Binding FileName}" TextTrimming="CharacterEllipsis"/>
                                 <TextBlock Grid.Column="1" Text="{Binding Extension}" Opacity="0.8" TextTrimming="CharacterEllipsis"/>
                                 <TextBlock Grid.Column="2" Text="{Binding LastWriteText}" Opacity="0.8" TextTrimming="CharacterEllipsis"/>
-                                <TextBlock Grid.Column="3" Text="{Binding Path}" Opacity="0.8" TextTrimming="CharacterEllipsis"/>
                             </Grid>
                         </Border>
                     </DataTemplate>
