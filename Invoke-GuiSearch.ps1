@@ -81,7 +81,7 @@ if (-not $PSBoundParameters.ContainsKey('Query')) {
                 $suffix = ".$suffix"
             }
             if ($seen.Add($suffix)) {
-                $filters.Add($suffix)
+                [void]$filters.Add($suffix)
             }
         }
         if ($filters.Count -eq 0) {
