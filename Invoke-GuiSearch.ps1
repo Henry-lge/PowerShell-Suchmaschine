@@ -6,7 +6,8 @@ param(
     [ValidateRange(1, 1000)]
     [int]$Limit = 100,
     [string]$Extension,
-    [string]$SearchMode = 'Both'
+    [string]$SearchMode = 'Both',
+    [string[]]$Extensions
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,7 +18,7 @@ $database = $null
 $useLiteral = $false
 
 try {
-    
+
 if (-not $PSBoundParameters.ContainsKey('Query')) {
     $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
 
@@ -29,6 +30,10 @@ if (-not $PSBoundParameters.ContainsKey('Query')) {
 
     if ($null -ne $request.extension) {
         $Extension = [string]$request.extension
+    }
+
+    if ($null -ne $request.extensions) {
+        $Extensions = [string[]]@($request.extensions)
     }
 
     if ($null -ne $request.literal) {
@@ -65,33 +70,55 @@ if (-not $PSBoundParameters.ContainsKey('Query')) {
         Import-Module (Join-Path $PSScriptRoot 'src/Persistence/SqliteDateiRepository.psm1') -Force 6>$null
         $database = Initialize-Database -DatabasePath $DatabasePath 6>$null 3>$null
 
-        # Die gesamte Suchlogik liegt hinter der DB-Schnittstelle.
-        # $results = @(Search-Query -Database $database -Query $Query -Limit $Limit -Extension $Extension -SearchMode $SearchMode |
+        $filters = [System.Collections.Generic.List[string]]::new()
+        $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($item in $Extensions) {
+            $suffix = ([string]$item).Trim()
+            if ($suffix -eq '') {
+                continue
+            }
+            if (-not $suffix.StartsWith('.')) {
+                $suffix = ".$suffix"
+            }
+            if ($seen.Add($suffix)) {
+                $filters.Add($suffix)
+            }
+        }
+        if ($filters.Count -eq 0) {
+            $filters.Add($Extension)
+        }
+
         $searchParameters = @{
             Database = $database
             Query = $Query
             Limit = $Limit
-            Extension = $Extension
             SearchMode = $SearchMode
         }
         if ($useLiteral) {
             $searchParameters.Literal = $true
         }
 
-        try {
-            $rawResults = @(Search-Query @searchParameters)
-        }
-        catch {
-            if (
-                $useLiteral -or
-                [string]::IsNullOrWhiteSpace($Query) -or
-                $_.Exception.Message -notmatch '(?i)(fts|match|syntax)'
-            ) {
-                throw
+        # Die DB-Schnittstelle nimmt eine einzelne Endung pro Aufruf an.
+        $rawResults = @(foreach ($filter in $filters) {
+            $searchParameters.Extension = $filter
+            try {
+                Search-Query @searchParameters
             }
+            catch {
+                if ($searchParameters.Literal -or $_.Exception.Message -notmatch '(?i)(fts|match|syntax)') {
+                    throw
+                }
 
-            $searchParameters.Literal = $true
-            $rawResults = @(Search-Query @searchParameters)
+                $searchParameters.Literal = $true
+                Search-Query @searchParameters
+            }
+        })
+        if ($filters.Count -gt 1) {
+            $sortKeys = @(
+                @{ Expression = { $_.Score }; Descending = $true }
+                @{ Expression = { [System.IO.Path]::GetFileNameWithoutExtension($_.File.Name) } }
+            )
+            $rawResults = @($rawResults | Sort-Object -Property $sortKeys -CaseSensitive -Top $Limit)
         }
 
         $results = @($rawResults |
