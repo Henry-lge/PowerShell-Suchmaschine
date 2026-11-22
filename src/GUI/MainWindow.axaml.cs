@@ -363,7 +363,7 @@ namespace FileSearcherApp
             if (sender is not TextBlock { Tag: string tag }) return;
             var key = tag switch { "Name" => SortKey.Name, "Type" => SortKey.Type, "Date" => SortKey.Date, _ => SortKey.Relevance };
 
-            if (key == _sortKey && key != SortKey.Type)
+            if (key == _sortKey)
                 _sortAscending = !_sortAscending;
             else
             {
