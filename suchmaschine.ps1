@@ -12,8 +12,8 @@ param(
     # Zusätzliche absolute Ordnerpfade, die übersprungen werden.
     [string[]]$ExcludePath = @(),
 
-    # Optionaler FTS5-Suchausdruck; ohne Wert wird nur gescannt.
-    [string]$Query = "Pastei de Nata",
+    # Optionaler Suchtext; ohne Wert wird nur gescannt.
+    [string]$Query = "cat (Katze)",
 
     # Persistenter SQLite-Index.
     [string]$DatabasePath = (Join-Path $PSScriptRoot "data/index.sqlite3"),
@@ -24,7 +24,21 @@ param(
 
     # Suchbereich: Dateiname, extrahierter Dateiinhalt oder beides.
     [ValidateSet("FileName", "Content", "Both")]
-    [string]$SearchMode = "Both"
+    [string]$SearchMode = "Both",
+
+    # Verknüpfung mehrerer Suchbegriffe.
+    [ValidateSet("And", "Or")]
+    [string]$MatchMode = "And",
+
+    # Seite der Suchergebnisse (0 = erste Seite).
+    [ValidateRange(0, 2147483647)]
+    [int]$Offset = 0,
+
+    # Optional erlaubte Dateiendungen.
+    [string[]]$IncludeExtensions = @(),
+
+    # Optional ausgeschlossene Dateiendungen.
+    [string[]]$ExcludeExtensions = @()
 )
 
 # Der Crawler öffnet die Datenbank unter DatabasePath selbst. Nur so kann er
@@ -89,7 +103,10 @@ try {
     if (-not [string]::IsNullOrWhiteSpace($Query)) {
         $results = @(
             Search-Query -Database $crawler.Repository -Query $Query `
-                -Limit $SearchLimit -SearchMode $SearchMode
+                -Limit $SearchLimit -SearchMode $SearchMode `
+                -MatchMode $MatchMode -Offset $Offset `
+                -IncludeExtensions $IncludeExtensions `
+                -ExcludeExtensions $ExcludeExtensions
         )
         if ($results.Count -eq 0) {
             # Klammern nötig: -f bindet stärker als +, sonst würde nur der

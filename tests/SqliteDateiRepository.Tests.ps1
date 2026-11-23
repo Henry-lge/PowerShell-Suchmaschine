@@ -192,6 +192,83 @@ Describe "SqliteDateiRepository" {
             -SearchMode Both).File.Path | Should -Be $file.Path
     }
 
+    It "combines whitespace-separated terms with AND or OR and preserves quoted phrases" {
+        $both = New-TestDatei -Path (Join-Path $script:testRoot "both.txt")
+        $both.Content = "blue comet and red"
+        $blue = New-TestDatei -Path (Join-Path $script:testRoot "blue.txt")
+        $blue.Content = "blue comet"
+        $red = New-TestDatei -Path (Join-Path $script:testRoot "red.txt")
+        $red.Content = "red giant"
+        $script:database.SaveBatch([Datei[]]@($both, $blue, $red))
+
+        $andResults = @(
+            Search-Query -Database $script:database -Query 'blue red' `
+                -SearchMode Content -MatchMode And
+        )
+        $orResults = @(
+            Search-Query -Database $script:database -Query 'blue red' `
+                -SearchMode Content -MatchMode Or
+        )
+        $phraseResults = @(
+            Search-Query -Database $script:database -Query '"blue comet" red' `
+                -SearchMode Content -MatchMode And
+        )
+
+        $andResults | Should -HaveCount 1
+        $andResults[0].File.Path | Should -Be $both.Path
+        $orResults | Should -HaveCount 3
+        $phraseResults | Should -HaveCount 1
+        $phraseResults[0].File.Path | Should -Be $both.Path
+    }
+
+    It "pages full-text and literal results with a stable order" {
+        $files = @(
+            (New-TestDatei -Path (Join-Path $script:testRoot "page-one.txt")),
+            (New-TestDatei -Path (Join-Path $script:testRoot "page-two.txt")),
+            (New-TestDatei -Path (Join-Path $script:testRoot "page-three.txt"))
+        )
+        foreach ($file in $files) {
+            $file.Content = "pagingtoken"
+        }
+        $script:database.SaveBatch([Datei[]]$files)
+
+        $firstPage = @(
+            Search-Query -Database $script:database -Query "pagingtoken" `
+                -SearchMode Content -Limit 2 -Offset 0
+        )
+        $secondPage = @(
+            Search-Query -Database $script:database -Query "pagingtoken" `
+                -SearchMode Content -Limit 2 -Offset 2
+        )
+        $pastEnd = @(
+            Search-Query -Database $script:database -Query "pagingtoken" `
+                -SearchMode Content -Limit 2 -Offset 3
+        )
+
+        $firstPage | Should -HaveCount 2
+        $firstPage[0].File.Path | Should -Be $files[0].Path
+        $firstPage[1].File.Path | Should -Be $files[1].Path
+        $secondPage | Should -HaveCount 1
+        $secondPage[0].File.Path | Should -Be $files[2].Path
+        $pastEnd | Should -BeNullOrEmpty
+
+        $contentHit = New-TestDatei -Path (Join-Path $script:testRoot "literalneedle-one.txt")
+        $contentHit.Content = "literalneedle"
+        $secondContentHit = New-TestDatei -Path (Join-Path $script:testRoot "literalneedle-two.txt")
+        $secondContentHit.Content = "literalneedle"
+        $filenameOnlyHit = New-TestDatei -Path (Join-Path $script:testRoot "literalneedle-three.txt")
+        $filenameOnlyHit.Content = "unrelated"
+        $script:database.SaveBatch([Datei[]]@($contentHit, $secondContentHit, $filenameOnlyHit))
+
+        $literalPage = @(
+            Search-Query -Database $script:database -Query "literalneedle" `
+                -Literal -Limit 2 -Offset 1
+        )
+        $literalPage | Should -HaveCount 2
+        $literalPage[0].File.Path | Should -Be $secondContentHit.Path
+        $literalPage[1].File.Path | Should -Be $filenameOnlyHit.Path
+    }
+
     It "indexes full text and returns a snippet and positive relevance score" {
         $file = New-TestDatei -Path (Join-Path $script:testRoot "alpha.txt")
         $file.Content = "A unique searchmarker appears in this document."
@@ -315,6 +392,65 @@ Describe "SqliteDateiRepository" {
 
         $results | Should -HaveCount 1
         $results[0].File.Extension | Should -Be ".txt"
+    }
+
+    It "combines extension filters with term operators and pagination" {
+        $textFile = New-TestDatei -Path (Join-Path $script:testRoot "terms.txt")
+        $textFile.Content = "blue sharedmarker"
+        $firstPdf = New-TestDatei -Path (Join-Path $script:testRoot "terms-first.pdf")
+        $firstPdf.Content = "blue sharedmarker"
+        $secondPdf = New-TestDatei -Path (Join-Path $script:testRoot "terms-second.pdf")
+        $secondPdf.Content = "red sharedmarker"
+        $wordFile = New-TestDatei -Path (Join-Path $script:testRoot "terms.docx")
+        $wordFile.Content = "blue red sharedmarker"
+        $script:database.SaveBatch([Datei[]]@($textFile, $firstPdf, $secondPdf, $wordFile))
+
+        $firstPage = @(
+            Search-Query -Database $script:database -Query "blue red" `
+                -SearchMode Content -MatchMode Or -IncludeExtensions @("txt", "pdf") `
+                -ExcludeExtensions @("TXT") -Limit 1 -Offset 0
+        )
+        $secondPage = @(
+            Search-Query -Database $script:database -Query "blue red" `
+                -SearchMode Content -MatchMode Or -IncludeExtensions @("txt", "pdf") `
+                -ExcludeExtensions @("TXT") -Limit 1 -Offset 1
+        )
+        $allResults = @(
+            Search-Query -Database $script:database -Query "blue red" `
+                -SearchMode Content -MatchMode Or -IncludeExtensions @("txt", "pdf") `
+                -ExcludeExtensions @("TXT") -Limit 10
+        )
+        $andResults = @(
+            Search-Query -Database $script:database -Query "blue red" `
+                -SearchMode Content -MatchMode And -IncludeExtensions @("txt", "pdf") `
+                -ExcludeExtensions @("TXT")
+        )
+
+        $allResults | Should -HaveCount 2
+        $firstPage | Should -HaveCount 1
+        $firstPage[0].File.Path | Should -Be $allResults[0].File.Path
+        $secondPage | Should -HaveCount 1
+        $secondPage[0].File.Path | Should -Be $allResults[1].File.Path
+        $allResults[0].File.Extension | Should -Be ".pdf"
+        $allResults[1].File.Extension | Should -Be ".pdf"
+        @($allResults.File.Path | Select-Object -Unique) | Should -HaveCount 2
+        $andResults | Should -BeNullOrEmpty
+
+        $textContentHit = New-TestDatei -Path (Join-Path $script:testRoot "literalpage-first.txt")
+        $textContentHit.Content = "literalpage"
+        $pdfContentHit = New-TestDatei -Path (Join-Path $script:testRoot "literalpage-second.pdf")
+        $pdfContentHit.Content = "literalpage"
+        $pdfNameHit = New-TestDatei -Path (Join-Path $script:testRoot "literalpage-third.pdf")
+        $pdfNameHit.Content = "unrelated"
+        $script:database.SaveBatch([Datei[]]@($textContentHit, $pdfContentHit, $pdfNameHit))
+
+        $literalPage = @(
+            Search-Query -Database $script:database -Query "literalpage" -Literal `
+                -IncludeExtensions @("pdf") -ExcludeExtensions @("txt") `
+                -Limit 1 -Offset 1
+        )
+        $literalPage | Should -HaveCount 1
+        $literalPage[0].File.Path | Should -Be $pdfNameHit.Path
     }
 
     It "searches hyphenated words as adjacent indexed tokens" {
@@ -749,6 +885,8 @@ CREATE TABLE files_metadata (
         { Search-Query -Database $script:database -Query "any" -Limit 0 } |
             Should -Throw
         { $script:database.Search("any", 1001, $null) } | Should -Throw
+        { Search-Query -Database $script:database -Query "any" -Offset -1 } |
+            Should -Throw
     }
 
     It "throws when used after disposal" {

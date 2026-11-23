@@ -535,6 +535,8 @@ Search-Query -Database $database -Query "skript" -SearchMode Both
 Search-Query -Database $database -Query ".txt" -Literal
 Search-Query -Database $database -Query "bericht" `
     -IncludeExtensions @(".pdf", ".docx") -ExcludeExtensions @(".docx")
+Search-Query -Database $database -Query "blue comet" -MatchMode Or `
+    -IncludeExtensions @(".pdf") -Limit 100 -Offset 100
 Get-SearchExtensions -Database $database
 ```
 
@@ -560,6 +562,13 @@ Parameter:
   Die Dateinamensuche verwendet SQLite `LIKE` und ist für ASCII unabhängig von
   Groß-/Kleinschreibung; bei anderen Zeichen gilt die SQLite-Standardregel.
 - `Limit`: Höchstens 1 bis 1000 Ergebnisse; Standard ist 100.
+- `Offset`: Nullbasierter Anfang des Ergebnisfensters; Standard ist 0.
+  Für die nächste Seite bei einem Limit von 100 wird der Offset auf 100, dann
+  auf 200 erhöht.
+- `MatchMode`: Optional `And` oder `Or`. Bei `And` müssen alle durch Leerzeichen
+  getrennten Begriffe vorkommen, bei `Or` mindestens einer. Begriffe in
+  doppelten Anführungszeichen bleiben eine Phrase. Ohne diesen Parameter wird
+  die bisherige FTS5-Abfragesyntax verwendet.
 - `Extension`: Optionaler Dateiendungsfilter. Ein fehlender Punkt wird
   ergänzt und die Eingabe kleingeschrieben. Bleibt aus Kompatibilitätsgründen
   verfügbar und wird mit `IncludeExtensions` kombiniert.
@@ -639,22 +648,23 @@ suchbar.
 
 ```mermaid
 flowchart TD
-    A["Search-Query(Query, Limit, Extension, IncludeExtensions, ExcludeExtensions, SearchMode)"] --> B{"Query leer?"}
+    A["Search-Query(Query, Limit, Offset, Extension, IncludeExtensions, ExcludeExtensions, SearchMode, MatchMode)"] --> B{"Query leer?"}
     B -- Ja --> C["leeres Ergebnis"]
     B -- Nein --> D{"Limit zwischen 1 und 1000?"}
     D -- Nein --> E["Ausnahme"]
-    D -- Ja --> F["Endungsfilter normalisieren<br/>optional"]
+    D -- Ja --> F["Suchbegriffe und Endungsfilter normalisieren"]
     F --> G["FTS-MATCH auf filename, content oder beiden"]
     G --> H["JOIN auf files_metadata<br/>über file_id"]
     H --> I["Include-/Exclude-Endungen anwenden"]
     I --> J["BM25-Rang berechnen<br/>Snippet erzeugen"]
-    J --> K["nach Rang ordnen<br/>und Limit anwenden"]
+    J --> K["stabil sortieren<br/>Limit und Offset anwenden"]
     K --> L["Dateiobjekt + Snippet + positiver Score"]
 ```
 
 Die folgende SQL-Abfrage zeigt die Suchlogik mit einer verkürzten Auswahl
-an Metadaten. Die Implementierung liest zusätzlich Größe, Zeitstempel und
-Statusfelder:
+an Metadaten. Die Endungsbedingungen werden nur ergänzt, wenn entsprechende
+Listen gesetzt sind. Die Implementierung liest zusätzlich Größe, Zeitstempel
+und Statusfelder:
 
 ```sql
 SELECT
@@ -666,10 +676,10 @@ SELECT
 FROM files_fts
 JOIN files_metadata AS m ON m.id = files_fts.rowid
 WHERE files_fts MATCH $queryParameter
-  AND ($extensionParameter IS NULL
-       OR m.extension = $extensionParameter COLLATE NOCASE)
-ORDER BY rank
-LIMIT $limitParameter;
+  AND m.extension COLLATE NOCASE IN ($includeExtension0, $includeExtension1)
+  AND m.extension COLLATE NOCASE NOT IN ($excludeExtension0)
+ORDER BY rank, m.id
+LIMIT $limitParameter OFFSET $offsetParameter;
 ```
 
 Für das Beispiel mit dem Handbuch liefert
@@ -881,8 +891,8 @@ Datenbankpfad angegeben und der Ordner erneut gescannt werden.
 | `Remove(path)` | Delegiert an `RemoveBatch()` mit genau einem Pfad. | Verhindert verwaiste Treffer oder Metadatensätze, solange der Vorgang erfolgreich ist. |
 | `RemoveBatch(paths)` | Löscht je höchstens 300 Pfade pro SQL-Gruppe aus FTS und Metadaten; alle Gruppen teilen sich eine Transaktion. | Validiert vorab, ignoriert doppelte normalisierte Pfade und rollt bei Fehlern den gesamten Aufruf zurück. |
 | `GetPathsUnder(folder)` | Indizierte Suche nach identischem Verzeichnis oder passendem Verzeichnispräfix; Kandidaten werden mit `PathUtil` exakt geprüft. | Gibt die Kandidaten für die Lösch-Erkennung zurück, ohne alle Metadaten zu lesen. |
-| `Search(query, limit, extension, searchMode, includeExtensions, excludeExtensions)` | FTS5-`MATCH` auf Dateiname, Inhalt oder beides; Join auf Metadaten, optionale Endungsfilter, Rang, Snippet und Limit. | Gibt Objekte mit `File`, `Snippet`, `Score` zurück. |
-| `SearchLiteral(query, limit, extension, searchMode, includeExtensions, excludeExtensions)` | Wörtliche Dateinamenssuche plus FTS-Phrasensuche im Inhalt; wendet dieselben Endungsfilter an. | Inhaltstreffer werden dedupliziert und vor Dateinamens-Treffern ausgegeben. |
+| `Search(query, limit, extension, searchMode, includeExtensions, excludeExtensions, matchMode, offset)` | FTS5-`MATCH` auf Dateiname, Inhalt oder beides; Join auf Metadaten, optionale Endungsfilter, Rang, Snippet und Paging. | Gibt Objekte mit `File`, `Snippet`, `Score` zurück. |
+| `SearchLiteral(query, limit, extension, searchMode, includeExtensions, excludeExtensions, offset)` | Wörtliche Dateinamenssuche plus FTS-Phrasensuche im Inhalt; wendet dieselben Endungsfilter und Paging an. | Inhaltstreffer werden dedupliziert und vor Dateinamens-Treffern ausgegeben. |
 | `GetExtensions()` / `Get-SearchExtensions` | Liest die eindeutigen Dateiendungen des Indexes sortiert aus. | Gibt die indizierten Dateiendungen zurück. |
 | `Dispose()` | Schließt die SQLite-Verbindung einmalig. | Nach `Dispose()` weisen Repository-Methoden mit `EnsureOpen()` auf die ungültige Verwendung hin. |
 
@@ -1081,8 +1091,8 @@ sequenceDiagram
     participant Repo as SqliteDateiRepository
     participant FTS as files_fts
     participant Meta as files_metadata
-    Caller->>Query: Query, Limit, Endungsfilter, SearchMode
-    Query->>Repo: Search(Query, Limit, Extension, SearchMode, Include, Exclude)
+    Caller->>Query: Query, Limit, Extension, IncludeExtensions, ExcludeExtensions, SearchMode, MatchMode, Offset
+    Query->>Repo: Search(Query, Limit, Extension, SearchMode, Include, Exclude, MatchMode, Offset)
     Repo->>Repo: Suchparameter und Limit validieren
     Repo->>FTS: FTS5-MATCH im gewählten Suchbereich
     Repo->>FTS: Rang und passenden Snippet berechnen
@@ -1093,8 +1103,19 @@ sequenceDiagram
 ```
 
 Ein leerer Suchtext liefert keine Treffer. Das Limit ist auf 1 bis 1000
-begrenzt; der Dateiendungsfilter ist optional. `SearchMode` ist `FileName`,
-`Content` oder `Both` und standardmäßig `Both`.
+begrenzt; `Offset` ist nullbasiert und standardmäßig 0. So lassen sich etwa
+mit `-Limit 100 -Offset 0`, danach `-Offset 100` und `-Offset 200` weitere
+Ergebnisseiten abrufen. Eine stabile Sortierung macht die Seiten bei gleichen
+Relevanzwerten reproduzierbar.
+
+Mit `-MatchMode And` müssen alle durch Leerzeichen getrennten Begriffe
+vorkommen; `-MatchMode Or` liefert Treffer, die mindestens einen Begriff
+enthalten. Begriffe in doppelten Anführungszeichen bleiben eine zusammenhängende
+Phrase, etwa `-Query '"blue comet" red'`. Die Suchbegriffe werden als FTS5-Literale
+behandelt, nicht als FTS-Operatoren. Aufrufe ohne `-MatchMode` behalten die
+bisherige direkte FTS5-Abfragesyntax bei. Der optionale Dateiendungsfilter
+bleibt unverändert. `SearchMode` ist `FileName`, `Content` oder `Both` und
+standardmäßig `Both`.
 
 ### Datenbankverbindung schließen
 
